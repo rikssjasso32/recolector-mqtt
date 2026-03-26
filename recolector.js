@@ -5,7 +5,7 @@ const cors = require('cors');
 
 const app = express();
 app.use(cors());
-const PORT = 3000;
+const PORT = process.env.PORT || 3000;
 
 const ARCHIVO = 'historial.json';
 
@@ -43,6 +43,7 @@ app.get('/historial', (req, res) => {
   const data = fs.readFileSync(ARCHIVO, 'utf-8')
     .trim()
     .split('\n')
+    .filter(line => line.trim() !== "")
     .map(line => JSON.parse(line));
 
   res.json(data);
