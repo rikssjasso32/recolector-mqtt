@@ -5,6 +5,8 @@ const cors = require('cors');
 
 const app = express();
 app.use(cors());
+
+// 🔥 IMPORTANTE PARA RENDER
 const PORT = process.env.PORT || 3000;
 
 const ARCHIVO = 'historial.json';
@@ -33,7 +35,7 @@ client.on('message', (topic, message) => {
   console.log('📥 Guardado:', registro);
 });
 
-// 🌐 API para la web
+// 🌐 API
 app.get('/historial', (req, res) => {
 
   if (!fs.existsSync(ARCHIVO)) {
@@ -43,12 +45,19 @@ app.get('/historial', (req, res) => {
   const data = fs.readFileSync(ARCHIVO, 'utf-8')
     .trim()
     .split('\n')
-    .filter(line => line.trim() !== "")
     .map(line => JSON.parse(line));
 
   res.json(data);
 });
 
+app.delete('/historial', (req, res) => {
+  fs.writeFileSync(ARCHIVO, '');
+  console.log('🧹 Historial borrado');
+  res.send('Historial eliminado correctamente');
+});
+
+// 🔥 IMPORTANTE
 app.listen(PORT, () => {
-  console.log(`🌐 Servidor corriendo en http://localhost:${PORT}`);
-});               
+  console.log(`🌐 Servidor corriendo en puerto ${PORT}`);
+});
+
