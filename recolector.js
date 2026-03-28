@@ -50,14 +50,7 @@ app.get('/historial', (req, res) => {
   res.json(data);
 });
 
-app.delete('/historial', (req, res) => {
-  fs.writeFileSync(ARCHIVO, '');
-  console.log('🧹 Historial borrado');
-  res.send('Historial eliminado correctamente');
-});
-
 // 🔥 IMPORTANTE
 app.listen(PORT, () => {
   console.log(`🌐 Servidor corriendo en puerto ${PORT}`);
 });
-
