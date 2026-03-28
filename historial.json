@@ -542,3 +542,5 @@
 {"surco":1,"variable":"modo","valor":"MANUAL","tiempo":"2026-03-27T20:56:51.811Z"}
 {"surco":1,"variable":"modo","valor":"AUTOMATICO","tiempo":"2026-03-27T20:56:56.655Z"}
 {"surco":1,"variable":"modo","valor":"MANUAL","tiempo":"2026-03-27T20:57:07.613Z"}
+{"surco":1,"variable":"valvula","valor":"ON","tiempo":"2026-03-28T06:44:27.742Z"}
+{"surco":1,"variable":"valvula","valor":"OFF","tiempo":"2026-03-28T06:44:30.607Z"}
