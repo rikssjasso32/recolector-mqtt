@@ -30,34 +30,82 @@ client.on('message', (topic, message) => {
     tiempo: new Date().toISOString()
   };
 
-  fs.appendFileSync(ARCHIVO, JSON.stringify(registro) + '\n');
-
-  console.log('📥 Guardado:', registro);
+  try {
+    fs.appendFileSync(ARCHIVO, JSON.stringify(registro) + '\n');
+    console.log('📥 Guardado:', registro);
+  } catch (error) {
+    console.error('❌ Error guardando:', error);
+  }
 });
 
 // 🌐 API
 app.get('/historial', (req, res) => {
+  try {
+    if (!fs.existsSync(ARCHIVO)) {
+      return res.json([]);
+    }
 
-  if (!fs.existsSync(ARCHIVO)) {
-    return res.json([]);
+    const contenido = fs.readFileSync(ARCHIVO, 'utf-8').trim();
+
+    if (!contenido) return res.json([]);
+
+    const data = contenido
+      .split('\n')
+      .map(line => JSON.parse(line));
+
+    res.json(data);
+
+  } catch (error) {
+    console.error('❌ Error leyendo historial:', error);
+    res.status(500).json({ error: 'Error leyendo datos' });
   }
-
-  const data = fs.readFileSync(ARCHIVO, 'utf-8')
-    .trim()
-    .split('\n')
-    .map(line => JSON.parse(line));
-
-  res.json(data);
 });
 
+// 🧹 BORRADO MANUAL
 app.delete('/historial', (req, res) => {
-  fs.writeFileSync(ARCHIVO, '');
-  console.log('🧹 Historial borrado');
-  res.send('Historial eliminado correctamente');
+  try {
+    if (fs.existsSync(ARCHIVO)) {
+      fs.writeFileSync(ARCHIVO, '');
+    }
+    console.log('🧹 Historial borrado manualmente');
+    res.send('Historial eliminado correctamente');
+  } catch (error) {
+    console.error('❌ Error borrando historial:', error);
+    res.status(500).send('Error al borrar historial');
+  }
 });
 
-// 🔥 IMPORTANTE
+// 🧠 LIMPIEZA AUTOMÁTICA (LUNES)
+function limpiarHistorialSemanal() {
+  const hoy = new Date();
+  const dia = hoy.getDay(); // 1 = lunes
+
+  const ultimaLimpieza = global.ultimaLimpieza || "";
+
+  if (dia === 1) {
+    const hoyStr = hoy.toDateString();
+
+    if (ultimaLimpieza !== hoyStr) {
+      try {
+        if (fs.existsSync(ARCHIVO)) {
+          fs.writeFileSync(ARCHIVO, '');
+          console.log("🧹 Historial borrado automáticamente (lunes)");
+        }
+        global.ultimaLimpieza = hoyStr;
+      } catch (error) {
+        console.error('❌ Error en limpieza automática:', error);
+      }
+    }
+  }
+}
+
+// 🔁 Revisar cada 10 minutos
+setInterval(limpiarHistorialSemanal, 1000 * 60 * 10);
+
+// 🔥 Ejecutar al iniciar servidor
+limpiarHistorialSemanal();
+
+// 🚀 SERVIDOR
 app.listen(PORT, () => {
   console.log(`🌐 Servidor corriendo en puerto ${PORT}`);
 });
-
