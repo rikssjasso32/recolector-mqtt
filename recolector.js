@@ -89,7 +89,7 @@ app.delete('/historial', (req, res) => {
 // 🔥 GUARDAR CONFIG
 app.post('/config', (req, res) => {
   try {
-    const { surco, planta, min, max } = req.body;
+    const { surco, planta, min, max, modo } = req.body;
 
     let data = [];
 
