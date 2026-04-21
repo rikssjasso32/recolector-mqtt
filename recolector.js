@@ -5,12 +5,10 @@ const cors = require('cors');
 
 const app = express();
 app.use(cors());
-app.use(express.json()); // 🔥 IMPORTANTE
+app.use(express.json());
 
-// 🔥 IMPORTANTE PARA RENDER
 const PORT = process.env.PORT || 3000;
 
-// 📁 ARCHIVOS
 const ARCHIVO = 'historial.json';
 const ARCHIVO_CONFIG = 'config.json';
 
@@ -47,18 +45,12 @@ client.on('message', (topic, message) => {
 // =============================
 app.get('/historial', (req, res) => {
   try {
-    if (!fs.existsSync(ARCHIVO)) {
-      return res.json([]);
-    }
+    if (!fs.existsSync(ARCHIVO)) return res.json([]);
 
     const contenido = fs.readFileSync(ARCHIVO, 'utf-8').trim();
-
     if (!contenido) return res.json([]);
 
-    const data = contenido
-      .split('\n')
-      .map(line => JSON.parse(line));
-
+    const data = contenido.split('\n').map(line => JSON.parse(line));
     res.json(data);
 
   } catch (error) {
@@ -67,12 +59,9 @@ app.get('/historial', (req, res) => {
   }
 });
 
-// 🧹 BORRADO MANUAL
 app.delete('/historial', (req, res) => {
   try {
-    if (fs.existsSync(ARCHIVO)) {
-      fs.writeFileSync(ARCHIVO, '');
-    }
+    if (fs.existsSync(ARCHIVO)) fs.writeFileSync(ARCHIVO, '');
     console.log('🧹 Historial borrado manualmente');
     res.send('Historial eliminado correctamente');
   } catch (error) {
@@ -83,7 +72,7 @@ app.delete('/historial', (req, res) => {
 
 
 // =============================
-// 🌿 API CONFIG (NUEVO 🔥)
+// 🌿 API CONFIG
 // =============================
 
 // 🔥 GUARDAR CONFIG
@@ -99,7 +88,7 @@ app.post('/config', (req, res) => {
 
     const index = data.findIndex(d => d.surco === surco);
 
-    const nuevaConfig = { surco, planta, min, max };
+    const nuevaConfig = { surco, planta, min, max, modo }; // 🔥 CORREGIDO
 
     if (index >= 0) {
       data[index] = nuevaConfig;
@@ -119,13 +108,10 @@ app.post('/config', (req, res) => {
   }
 });
 
-
 // 🔥 OBTENER CONFIG
 app.get('/config', (req, res) => {
   try {
-    if (!fs.existsSync(ARCHIVO_CONFIG)) {
-      return res.json([]);
-    }
+    if (!fs.existsSync(ARCHIVO_CONFIG)) return res.json([]);
 
     const data = JSON.parse(fs.readFileSync(ARCHIVO_CONFIG));
     res.json(data);
@@ -138,11 +124,11 @@ app.get('/config', (req, res) => {
 
 
 // =============================
-// 🧠 LIMPIEZA AUTOMÁTICA (HISTORIAL)
+// 🧠 LIMPIEZA AUTOMÁTICA
 // =============================
 function limpiarHistorialSemanal() {
   const hoy = new Date();
-  const dia = hoy.getDay(); // 1 = lunes
+  const dia = hoy.getDay();
 
   const ultimaLimpieza = global.ultimaLimpieza || "";
 
@@ -163,10 +149,7 @@ function limpiarHistorialSemanal() {
   }
 }
 
-// 🔁 Revisar cada 10 minutos
 setInterval(limpiarHistorialSemanal, 1000 * 60 * 10);
-
-// 🔥 Ejecutar al iniciar servidor
 limpiarHistorialSemanal();
 
 
