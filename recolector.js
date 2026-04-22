@@ -72,13 +72,13 @@ app.delete('/historial', (req, res) => {
 
 
 // =============================
-// 🌿 API CONFIG
+// 🌿 API CONFIG (CORREGIDO)
 // =============================
 
 // 🔥 GUARDAR CONFIG
 app.post('/config', (req, res) => {
   try {
-    const { surco, planta, min, max, modo } = req.body;
+    const { surco, planta, min, max, modo, plantas } = req.body;
 
     let data = [];
 
@@ -88,7 +88,15 @@ app.post('/config', (req, res) => {
 
     const index = data.findIndex(d => d.surco === surco);
 
-    const nuevaConfig = { surco, planta, min, max, modo }; // 🔥 CORREGIDO
+    // 🔥 CONFIG NUEVA CON PLANTAS
+    const nuevaConfig = {
+      surco,
+      planta,
+      min,
+      max,
+      modo,
+      plantas: plantas || (index >= 0 ? data[index].plantas : []) || []
+    };
 
     if (index >= 0) {
       data[index] = nuevaConfig;
@@ -114,7 +122,14 @@ app.get('/config', (req, res) => {
     if (!fs.existsSync(ARCHIVO_CONFIG)) return res.json([]);
 
     const data = JSON.parse(fs.readFileSync(ARCHIVO_CONFIG));
-    res.json(data);
+
+    // 🔥 ASEGURAR QUE SIEMPRE EXISTA plantas
+    const dataCorregida = data.map(cfg => ({
+      ...cfg,
+      plantas: cfg.plantas || []
+    }));
+
+    res.json(dataCorregida);
 
   } catch (error) {
     console.error("❌ Error leyendo config:", error);
