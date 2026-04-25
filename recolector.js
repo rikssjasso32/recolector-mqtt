@@ -20,9 +20,28 @@ client.on('connect', () => {
   client.subscribe('riego/surco/+/+');
 });
 
+// =============================
+// 🧠 CONTROL INTELIGENTE HISTORIAL
+// =============================
+let ultimoRegistro = {};
+let ultimoTiempo = {};
+const INTERVALO_MIN = 2000; // 2 segundos
+
 client.on('message', (topic, message) => {
   const valor = message.toString();
   const [, , surcoId, variable] = topic.split('/');
+
+  const clave = `${surcoId}_${variable}`;
+  const ahora = Date.now();
+
+  // 🔥 evitar duplicados por valor
+  if (ultimoRegistro[clave] === valor) return;
+
+  // 🔥 evitar spam por tiempo
+  if (ultimoTiempo[clave] && (ahora - ultimoTiempo[clave] < INTERVALO_MIN)) return;
+
+  ultimoRegistro[clave] = valor;
+  ultimoTiempo[clave] = ahora;
 
   const registro = {
     surco: parseInt(surcoId),
@@ -33,12 +52,12 @@ client.on('message', (topic, message) => {
 
   try {
     fs.appendFileSync(ARCHIVO, JSON.stringify(registro) + '\n');
+    recortarHistorial();
     console.log('📥 Guardado:', registro);
   } catch (error) {
     console.error('❌ Error guardando:', error);
   }
 });
-
 
 // =============================
 // 🌐 API HISTORIAL
@@ -50,7 +69,18 @@ app.get('/historial', (req, res) => {
     const contenido = fs.readFileSync(ARCHIVO, 'utf-8').trim();
     if (!contenido) return res.json([]);
 
-    const data = contenido.split('\n').map(line => JSON.parse(line));
+    const data = contenido
+      .split('\n')
+      .filter(line => line.trim() !== "")
+      .map(line => {
+        try {
+          return JSON.parse(line);
+        } catch {
+          return null;
+        }
+      })
+      .filter(Boolean);
+
     res.json(data);
 
   } catch (error) {
@@ -70,12 +100,10 @@ app.delete('/historial', (req, res) => {
   }
 });
 
-
 // =============================
-// 🌿 API CONFIG (CORREGIDO)
+// 🌿 API CONFIG
 // =============================
 
-// 🔥 GUARDAR CONFIG
 app.post('/config', (req, res) => {
   try {
     const { surco, planta, min, max, modo, plantas } = req.body;
@@ -88,7 +116,6 @@ app.post('/config', (req, res) => {
 
     const index = data.findIndex(d => d.surco === surco);
 
-    // 🔥 CONFIG NUEVA CON PLANTAS
     const nuevaConfig = {
       surco,
       planta,
@@ -107,7 +134,6 @@ app.post('/config', (req, res) => {
     fs.writeFileSync(ARCHIVO_CONFIG, JSON.stringify(data, null, 2));
 
     console.log("💾 Config guardada:", nuevaConfig);
-
     res.send("OK");
 
   } catch (error) {
@@ -116,14 +142,12 @@ app.post('/config', (req, res) => {
   }
 });
 
-// 🔥 OBTENER CONFIG
 app.get('/config', (req, res) => {
   try {
     if (!fs.existsSync(ARCHIVO_CONFIG)) return res.json([]);
 
     const data = JSON.parse(fs.readFileSync(ARCHIVO_CONFIG));
 
-    // 🔥 ASEGURAR QUE SIEMPRE EXISTA plantas
     const dataCorregida = data.map(cfg => ({
       ...cfg,
       plantas: cfg.plantas || []
@@ -137,9 +161,8 @@ app.get('/config', (req, res) => {
   }
 });
 
-
 // =============================
-// 🧠 LIMPIEZA AUTOMÁTICA
+// 🧹 LIMPIEZA AUTOMÁTICA
 // =============================
 function limpiarHistorialSemanal() {
   const hoy = new Date();
@@ -167,6 +190,29 @@ function limpiarHistorialSemanal() {
 setInterval(limpiarHistorialSemanal, 1000 * 60 * 10);
 limpiarHistorialSemanal();
 
+// =============================
+// ✂️ RECORTAR HISTORIAL
+// =============================
+function recortarHistorial() {
+  try {
+    if (!fs.existsSync(ARCHIVO)) return;
+
+    const lineas = fs.readFileSync(ARCHIVO, 'utf-8')
+      .split('\n')
+      .filter(l => l.trim() !== "");
+
+    const MAX = 3000;
+
+    if (lineas.length > MAX) {
+      const nuevas = lineas.slice(-MAX);
+      fs.writeFileSync(ARCHIVO, nuevas.join('\n') + '\n');
+      console.log("🧹 Historial recortado");
+    }
+
+  } catch (error) {
+    console.error("❌ Error recortando historial:", error);
+  }
+}
 
 // =============================
 // 🚀 SERVIDOR
