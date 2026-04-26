@@ -4,8 +4,12 @@ const express = require('express');
 const cors = require('cors');
 
 const app = express();
+
 app.use(cors());
 app.use(express.json());
+
+// 🔥 👉 ESTA LÍNEA ES LA CLAVE (AGREGADA)
+app.use(express.static("public"));
 
 const PORT = process.env.PORT || 3000;
 
@@ -25,7 +29,7 @@ client.on('connect', () => {
 // =============================
 let ultimoRegistro = {};
 let ultimoTiempo = {};
-const INTERVALO_MIN = 2000; // 2 segundos
+const INTERVALO_MIN = 2000;
 
 client.on('message', (topic, message) => {
   const valor = message.toString();
@@ -34,10 +38,7 @@ client.on('message', (topic, message) => {
   const clave = `${surcoId}_${variable}`;
   const ahora = Date.now();
 
-  // 🔥 evitar duplicados por valor
   if (ultimoRegistro[clave] === valor) return;
-
-  // 🔥 evitar spam por tiempo
   if (ultimoTiempo[clave] && (ahora - ultimoTiempo[clave] < INTERVALO_MIN)) return;
 
   ultimoRegistro[clave] = valor;
