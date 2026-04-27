@@ -7,8 +7,6 @@ const app = express();
 
 app.use(cors());
 app.use(express.json());
-
-// 🔥 👉 ESTA LÍNEA ES LA CLAVE (AGREGADA)
 app.use(express.static("public"));
 
 const PORT = process.env.PORT || 3000;
@@ -25,6 +23,16 @@ client.on('connect', () => {
 });
 
 // =============================
+// 🔒 VARIABLES PERMITIDAS (CLAVE)
+// =============================
+const VARIABLES_VALIDAS = [
+  "temp_aire",
+  "hum_aire",
+  "hum_tierra",
+  "valvula"
+];
+
+// =============================
 // 🧠 CONTROL INTELIGENTE HISTORIAL
 // =============================
 let ultimoRegistro = {};
@@ -32,12 +40,20 @@ let ultimoTiempo = {};
 const INTERVALO_MIN = 2000;
 
 client.on('message', (topic, message) => {
+
   const valor = message.toString();
   const [, , surcoId, variable] = topic.split('/');
+
+  // 🔥 FILTRO 1: ignorar variables no válidas
+  if (!VARIABLES_VALIDAS.includes(variable)) return;
+
+  // 🔥 FILTRO 2: ignorar mensajes vacíos (retained basura)
+  if (!valor || valor.trim() === "") return;
 
   const clave = `${surcoId}_${variable}`;
   const ahora = Date.now();
 
+  // 🔥 evitar duplicados
   if (ultimoRegistro[clave] === valor) return;
   if (ultimoTiempo[clave] && (ahora - ultimoTiempo[clave] < INTERVALO_MIN)) return;
 
@@ -104,7 +120,6 @@ app.delete('/historial', (req, res) => {
 // =============================
 // 🌿 API CONFIG
 // =============================
-
 app.post('/config', (req, res) => {
   try {
     const { surco, planta, min, max, modo, plantas } = req.body;
