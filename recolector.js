@@ -13,6 +13,7 @@ const PORT = process.env.PORT || 3000;
 
 const ARCHIVO = 'historial.json';
 const ARCHIVO_CONFIG = 'config.json';
+const ARCHIVO_LIMPIEZA = 'ultima_limpieza.txt';
 
 // 🔗 MQTT
 const client = mqtt.connect('mqtt://broker.hivemq.com');
@@ -23,7 +24,7 @@ client.on('connect', () => {
 });
 
 // =============================
-// 🔒 VARIABLES PERMITIDAS (CLAVE)
+// 🔒 VARIABLES PERMITIDAS
 // =============================
 const VARIABLES_VALIDAS = [
   "temp_aire",
@@ -44,16 +45,12 @@ client.on('message', (topic, message) => {
   const valor = message.toString();
   const [, , surcoId, variable] = topic.split('/');
 
-  // 🔥 FILTRO 1: ignorar variables no válidas
   if (!VARIABLES_VALIDAS.includes(variable)) return;
-
-  // 🔥 FILTRO 2: ignorar mensajes vacíos (retained basura)
   if (!valor || valor.trim() === "") return;
 
   const clave = `${surcoId}_${variable}`;
   const ahora = Date.now();
 
-  // 🔥 evitar duplicados
   if (ultimoRegistro[clave] === valor) return;
   if (ultimoTiempo[clave] && (ahora - ultimoTiempo[clave] < INTERVALO_MIN)) return;
 
@@ -178,33 +175,48 @@ app.get('/config', (req, res) => {
 });
 
 // =============================
-// 🧹 LIMPIEZA AUTOMÁTICA
+// 🧹 LIMPIEZA AUTOMÁTICA (MEJORADA)
 // =============================
 function limpiarHistorialSemanal() {
-  const hoy = new Date();
-  const dia = hoy.getDay();
 
-  const ultimaLimpieza = global.ultimaLimpieza || "";
+  let ultima = "";
 
-  if (dia === 1) {
-    const hoyStr = hoy.toDateString();
-
-    if (ultimaLimpieza !== hoyStr) {
-      try {
-        if (fs.existsSync(ARCHIVO)) {
-          fs.writeFileSync(ARCHIVO, '');
-          console.log("🧹 Historial borrado automáticamente (lunes)");
-        }
-        global.ultimaLimpieza = hoyStr;
-      } catch (error) {
-        console.error('❌ Error en limpieza automática:', error);
-      }
+  try {
+    if (fs.existsSync(ARCHIVO_LIMPIEZA)) {
+      ultima = fs.readFileSync(ARCHIVO_LIMPIEZA, 'utf-8');
     }
+  } catch (err) {
+    console.error("❌ Error leyendo limpieza:", err);
+  }
+
+  // 🔥 limpiar cada 7 días reales
+  if (ultima) {
+    const diferenciaDias = Math.floor(
+      (new Date() - new Date(ultima)) / (1000 * 60 * 60 * 24)
+    );
+
+    if (diferenciaDias < 7) return;
+  }
+
+  try {
+    if (fs.existsSync(ARCHIVO)) {
+      fs.writeFileSync(ARCHIVO, '');
+      console.log("🧹 Historial borrado automáticamente (cada 7 días)");
+    }
+
+    fs.writeFileSync(ARCHIVO_LIMPIEZA, new Date().toISOString());
+
+  } catch (error) {
+    console.error('❌ Error limpiando historial:', error);
   }
 }
 
+// 🔁 cada 10 minutos
 setInterval(limpiarHistorialSemanal, 1000 * 60 * 10);
+
+// 🔥 al iniciar
 limpiarHistorialSemanal();
+
 
 // =============================
 // ✂️ RECORTAR HISTORIAL
@@ -217,18 +229,19 @@ function recortarHistorial() {
       .split('\n')
       .filter(l => l.trim() !== "");
 
-    const MAX = 3000;
+    const MAX = 1000;
 
     if (lineas.length > MAX) {
       const nuevas = lineas.slice(-MAX);
       fs.writeFileSync(ARCHIVO, nuevas.join('\n') + '\n');
-      console.log("🧹 Historial recortado");
+      console.log("🧹 Historial recortado automáticamente");
     }
 
   } catch (error) {
     console.error("❌ Error recortando historial:", error);
   }
 }
+
 
 // =============================
 // 🚀 SERVIDOR
