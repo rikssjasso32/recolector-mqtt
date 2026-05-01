@@ -208,12 +208,33 @@ app.listen(PORT, () => {
   console.log(`🌐 Servidor en puerto ${PORT}`);
 });
 
-app.get('/nuke', async (req, res) => {
+app.get('/nuke-deep', async (req, res) => {
   try {
-    await db.ref('historial').remove();
-    res.send('🔥 HISTORIAL ELIMINADO COMPLETAMENTE');
+    const historialRef = db.ref('historial');
+    const snapshot = await historialRef.once('value');
+
+    if (!snapshot.exists()) {
+      return res.send('Nada que borrar');
+    }
+
+    const data = snapshot.val();
+
+    for (const surcoId in data) {
+      const surcoRef = db.ref(`historial/${surcoId}`);
+      const surcoSnap = await surcoRef.once('value');
+
+      const registros = surcoSnap.val();
+
+      for (const key in registros) {
+        await db.ref(`historial/${surcoId}/${key}`).remove();
+      }
+
+      console.log(`🧹 limpiado historial/${surcoId}`);
+    }
+
+    res.send('🔥 LIMPIEZA PROFUNDA COMPLETA');
   } catch (err) {
     console.error(err);
-    res.status(500).send('Error al borrar');
+    res.status(500).send('Error: ' + err.message);
   }
 });
