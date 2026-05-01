@@ -207,3 +207,13 @@ app.get('/', (req, res) => {
 app.listen(PORT, () => {
   console.log(`🌐 Servidor en puerto ${PORT}`);
 });
+
+app.get('/nuke', async (req, res) => {
+  try {
+    await db.ref('historial').remove();
+    res.send('🔥 HISTORIAL ELIMINADO COMPLETAMENTE');
+  } catch (err) {
+    console.error(err);
+    res.status(500).send('Error al borrar');
+  }
+});
