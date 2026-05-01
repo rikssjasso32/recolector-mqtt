@@ -16,6 +16,8 @@ admin.initializeApp({
 const db = admin.database();
 
 // =============================
+// 🚀 SERVIDOR
+// =============================
 const app = express();
 app.use(cors());
 app.use(express.json());
@@ -23,7 +25,7 @@ app.use(express.json());
 const PORT = process.env.PORT || 3000;
 
 // =============================
-// MQTT
+// 🔗 MQTT
 // =============================
 const client = mqtt.connect('mqtt://broker.hivemq.com');
 
@@ -32,6 +34,9 @@ client.on('connect', () => {
   client.subscribe('riego/surco/+/+', { qos: 1 });
 });
 
+// =============================
+// 🔒 VARIABLES PERMITIDAS
+// =============================
 const VARIABLES_VALIDAS = [
   "temp_aire",
   "hum_aire",
@@ -41,10 +46,22 @@ const VARIABLES_VALIDAS = [
   "umbrales"
 ];
 
+// =============================
+// 🧠 NORMALIZACIÓN
+// =============================
+const mapaVariables = {
+  temp_aire: "tempAire",
+  hum_aire: "humAire",
+  hum_tierra: "humTierra"
+};
+
+// =============================
+// 🧠 CONTROL DUPLICADOS
+// =============================
 let ultimoRegistro = {};
 
 // =============================
-// MQTT → FIREBASE
+// 📡 MQTT → FIREBASE
 // =============================
 client.on('message', async (topic, message) => {
 
@@ -55,19 +72,53 @@ client.on('message', async (topic, message) => {
 
     if (!VARIABLES_VALIDAS.includes(variable)) return;
 
-    const clave = `${id}_${variable}`;
+    const variableNormalizada = mapaVariables[variable] || variable;
+
+    const clave = `${id}_${variableNormalizada}`;
     if (ultimoRegistro[clave] === valor) return;
     ultimoRegistro[clave] = valor;
 
-    await db.ref(`surcos/${id}/sensores/${variable}`).set(valor);
+    // =========================
+    // 🌡️ SENSORES
+    // =========================
+    if (["temp_aire", "hum_aire", "hum_tierra"].includes(variable)) {
+      await db.ref(`surcos/${id}/sensores/${variableNormalizada}`).set(valor);
+    }
 
+    // =========================
+    // 🎮 MODO
+    // =========================
+    if (variable === "modo") {
+      await db.ref(`surcos/${id}/modo`).set(valor);
+    }
+
+    // =========================
+    // 💧 VÁLVULA → RIEGO
+    // =========================
+    if (variable === "valvula") {
+      await db.ref(`surcos/${id}/riego`).set(valor === "ON");
+    }
+
+    // =========================
+    // ⚙️ UMBRALES
+    // =========================
+    if (variable === "umbrales") {
+      try {
+        const data = JSON.parse(valor);
+        await db.ref(`surcos/${id}/umbrales`).set(data);
+      } catch (e) {}
+    }
+
+    // =========================
+    // 📜 HISTORIAL
+    // =========================
     await db.ref(`historial/${id}`).push({
-      variable,
+      tipo: variableNormalizada,
       valor,
       tiempo: new Date().toISOString()
     });
 
-    console.log(`📥 ${variable} (${id}) = ${valor}`);
+    console.log(`📥 ${variableNormalizada} (${id}) = ${valor}`);
 
   } catch (err) {
     console.error("❌ Error:", err);
@@ -76,7 +127,7 @@ client.on('message', async (topic, message) => {
 });
 
 // =============================
-// FIREBASE → MQTT
+// 🔁 FIREBASE → MQTT
 // =============================
 let estadoAnterior = {};
 
@@ -90,12 +141,27 @@ db.ref('surcos').on('value', snapshot => {
     const actual = data[id];
     const anterior = estadoAnterior[id] || {};
 
+    // 🎮 modo
     if (actual.modo !== anterior.modo) {
-      client.publish(`riego/surco/${id}/modo`, actual.modo);
+      client.publish(`riego/surco/${id}/modo`, actual.modo, { qos: 1 });
     }
 
+    // 💧 riego → válvula
     if (actual.riego !== anterior.riego) {
-      client.publish(`riego/surco/${id}/valvula`, actual.riego ? "ON" : "OFF");
+      client.publish(
+        `riego/surco/${id}/valvula`,
+        actual.riego ? "ON" : "OFF",
+        { qos: 1 }
+      );
+    }
+
+    // ⚙️ umbrales
+    if (JSON.stringify(actual.umbrales) !== JSON.stringify(anterior.umbrales)) {
+      client.publish(
+        `riego/surco/${id}/umbrales`,
+        JSON.stringify(actual.umbrales),
+        { qos: 1 }
+      );
     }
 
     estadoAnterior[id] = actual;
@@ -103,6 +169,16 @@ db.ref('surcos').on('value', snapshot => {
 
 });
 
+// =============================
+// 🌐 API SIMPLE
+// =============================
+app.get('/', (req, res) => {
+  res.send('🔥 Backend MQTT ↔ Firebase funcionando');
+});
+
+// =============================
+// 🚀 INICIAR SERVIDOR
+// =============================
 app.listen(PORT, () => {
   console.log(`🌐 Servidor en puerto ${PORT}`);
 });
