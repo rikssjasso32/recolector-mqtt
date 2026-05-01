@@ -208,33 +208,42 @@ app.listen(PORT, () => {
   console.log(`🌐 Servidor en puerto ${PORT}`);
 });
 
-app.get('/nuke-deep', async (req, res) => {
+app.get('/nuke-final', async (req, res) => {
   try {
-    const historialRef = db.ref('historial');
-    const snapshot = await historialRef.once('value');
+    const baseRef = db.ref('historial');
 
-    if (!snapshot.exists()) {
-      return res.send('Nada que borrar');
-    }
+    console.log("🔥 Iniciando limpieza progresiva...");
 
-    const data = snapshot.val();
+    const borrarChunk = async () => {
+      const snap = await baseRef.limitToFirst(50).once('value');
 
-    for (const surcoId in data) {
-      const surcoRef = db.ref(`historial/${surcoId}`);
-      const surcoSnap = await surcoRef.once('value');
-
-      const registros = surcoSnap.val();
-
-      for (const key in registros) {
-        await db.ref(`historial/${surcoId}/${key}`).remove();
+      if (!snap.exists()) {
+        console.log("✅ TERMINADO");
+        return false;
       }
 
-      console.log(`🧹 limpiado historial/${surcoId}`);
+      const updates = {};
+
+      snap.forEach(child => {
+        updates[child.key] = null;
+      });
+
+      await baseRef.update(updates);
+
+      console.log(`🧹 eliminados ${Object.keys(updates).length} nodos`);
+      return true;
+    };
+
+    // 🔁 loop controlado
+    let seguir = true;
+    while (seguir) {
+      seguir = await borrarChunk();
     }
 
-    res.send('🔥 LIMPIEZA PROFUNDA COMPLETA');
+    res.send('🔥 LIMPIEZA COMPLETA FINALIZADA');
+
   } catch (err) {
     console.error(err);
-    res.status(500).send('Error: ' + err.message);
+    res.status(500).send(err.message);
   }
 });
