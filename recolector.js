@@ -31,7 +31,7 @@ const client = mqtt.connect('mqtt://broker.hivemq.com');
 
 client.on('connect', () => {
   console.log('🟢 MQTT conectado');
-  client.subscribe('riego/surco/+/+', { qos: 1 });
+  client.subscribe('riego/surco/+/+', { qos: 0 });
 });
 
 // =============================
@@ -56,9 +56,21 @@ const mapaVariables = {
 };
 
 // =============================
-// 🧠 CONTROL DUPLICADOS
+// 🧠 CONTROL DUPLICADOS MQTT
 // =============================
 let ultimoRegistro = {};
+
+// =============================
+// 🚨 CONTROL ANTI-LOOP
+// =============================
+let bloqueando = false;
+
+// =============================
+// 🧠 CONTROL HISTORIAL
+// =============================
+const MAX_HISTORIAL = 100;
+let ultimoCambio = {};
+let ultimoHistorial = {};
 
 // =============================
 // 📡 MQTT → FIREBASE
@@ -66,14 +78,19 @@ let ultimoRegistro = {};
 client.on('message', async (topic, message) => {
 
   try {
+    bloqueando = true;
+
     let valor = message.toString();
     const [, , surcoId, variable] = topic.split('/');
     const id = parseInt(surcoId);
 
+    // 🔒 protección
+    if (!id || isNaN(id)) return;
     if (!VARIABLES_VALIDAS.includes(variable)) return;
 
     const variableNormalizada = mapaVariables[variable] || variable;
 
+    // 🔁 evitar duplicados exactos MQTT
     const clave = `${id}_${variableNormalizada}`;
     if (ultimoRegistro[clave] === valor) return;
     ultimoRegistro[clave] = valor;
@@ -110,18 +127,45 @@ client.on('message', async (topic, message) => {
     }
 
     // =========================
-    // 📜 HISTORIAL
+    // 📜 HISTORIAL INTELIGENTE
     // =========================
-    await db.ref(`historial/${id}`).push({
-      tipo: variableNormalizada,
-      valor,
-      tiempo: new Date().toISOString()
-    });
+    if (["valvula", "modo"].includes(variable)) {
+
+      const ahora = Date.now();
+      const keyCambio = `${id}_${variable}`;
+
+      // 🔥 debounce 2 segundos
+      if (ultimoCambio[keyCambio] && ahora - ultimoCambio[keyCambio] < 2000) return;
+      ultimoCambio[keyCambio] = ahora;
+
+      // 🔥 evitar repetir mismo valor consecutivo
+      const keyHistFull = `${id}_${variable}_${valor}`;
+      if (ultimoHistorial[keyHistFull]) return;
+      ultimoHistorial[keyHistFull] = true;
+
+      const refHist = db.ref(`historial/${id}`);
+
+      // 🔥 limitar tamaño
+      const totalSnap = await refHist.once('value');
+
+      if (totalSnap.exists() && totalSnap.numChildren() >= MAX_HISTORIAL) {
+        const primero = Object.keys(totalSnap.val())[0];
+        await refHist.child(primero).remove();
+      }
+
+      await refHist.push({
+        tipo: variableNormalizada,
+        valor,
+        tiempo: new Date().toISOString()
+      });
+    }
 
     console.log(`📥 ${variableNormalizada} (${id}) = ${valor}`);
 
   } catch (err) {
     console.error("❌ Error:", err);
+  } finally {
+    setTimeout(() => bloqueando = false, 100);
   }
 
 });
@@ -131,43 +175,52 @@ client.on('message', async (topic, message) => {
 // =============================
 let estadoAnterior = {};
 
-db.ref('surcos').on('child_changed', snapshot => {
+db.ref('surcos').on('value', snapshot => {
 
-  const id = snapshot.key;
-  const actual = snapshot.val();
-  const anterior = estadoAnterior[id] || {};
+  if (bloqueando) return;
 
-  // 🎮 modo
-  if (actual.modo !== anterior.modo) {
-    client.publish(`riego/surco/${id}/modo`, actual.modo, { qos: 1 });
+  const data = snapshot.val();
+  if (!data) return;
+
+  for (let id in data) {
+
+    const actual = data[id];
+    const anterior = estadoAnterior[id] || {};
+
+    // 🎮 modo
+    if (actual.modo !== anterior.modo) {
+      client.publish(`riego/surco/${id}/modo`, actual.modo, { qos: 0 });
+    }
+
+    // 💧 riego → válvula
+    if (actual.riego !== anterior.riego) {
+      client.publish(
+        `riego/surco/${id}/valvula`,
+        actual.riego ? "ON" : "OFF",
+        { qos: 0 }
+      );
+    }
+
+    // ⚙️ umbrales
+    if (JSON.stringify(actual.umbrales) !== JSON.stringify(anterior.umbrales)) {
+      client.publish(
+        `riego/surco/${id}/umbrales`,
+        JSON.stringify(actual.umbrales),
+        { qos: 0 }
+      );
+    }
+
+    // 🔥 CLON REAL
+    estadoAnterior[id] = JSON.parse(JSON.stringify(actual));
   }
 
-  // 💧 riego
-  if (actual.riego !== anterior.riego) {
-    client.publish(
-      `riego/surco/${id}/valvula`,
-      actual.riego ? "ON" : "OFF",
-      { qos: 1 }
-    );
-  }
-
-  // ⚙️ UMBRALES (🔥 AQUÍ SE ARREGLA TODO)
-  if (actual.umbrales) {
-    client.publish(
-      `riego/surco/${id}/umbrales`,
-      JSON.stringify(actual.umbrales),
-      { qos: 1 }
-    );
-  }
-
-  estadoAnterior[id] = actual;
 });
 
 // =============================
-// 🌐 API SIMPLE
+// 🌐 API
 // =============================
 app.get('/', (req, res) => {
-  res.send('🔥 Backend MQTT ↔ Firebase funcionando');
+  res.send('🔥 Backend MQTT ↔ Firebase PRO funcionando');
 });
 
 // =============================
