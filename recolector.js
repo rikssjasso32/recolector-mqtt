@@ -31,7 +31,7 @@ const client = mqtt.connect('mqtt://broker.hivemq.com');
 
 client.on('connect', () => {
   console.log('🟢 MQTT conectado');
-  client.subscribe('riego/surco/+/+', { qos: 0 }); // QoS 0 evita duplicados
+  client.subscribe('riego/surco/+/+', { qos: 0 });
 });
 
 // =============================
@@ -66,12 +66,18 @@ let ultimoRegistro = {};
 let bloqueando = false;
 
 // =============================
+// 🧠 CONTROL HISTORIAL
+// =============================
+const MAX_HISTORIAL = 100;
+let ultimoCambio = {};
+
+// =============================
 // 📡 MQTT → FIREBASE
 // =============================
 client.on('message', async (topic, message) => {
 
   try {
-    bloqueando = true; // 🔥 BLOQUEAR ciclo
+    bloqueando = true;
 
     let valor = message.toString();
     const [, , surcoId, variable] = topic.split('/');
@@ -118,20 +124,38 @@ client.on('message', async (topic, message) => {
     }
 
     // =========================
-    // 📜 HISTORIAL (solo cambios reales)
+    // 📜 HISTORIAL INTELIGENTE
     // =========================
-    await db.ref(`historial/${id}`).push({
-      tipo: variableNormalizada,
-      valor,
-      tiempo: new Date().toISOString()
-    });
+    if (["valvula", "modo"].includes(variable)) {
+
+      const keyHist = `${id}_${variable}`;
+      const ahora = Date.now();
+
+      // 🔥 evitar spam (2 segundos)
+      if (ultimoCambio[keyHist] && ahora - ultimoCambio[keyHist] < 2000) return;
+      ultimoCambio[keyHist] = ahora;
+
+      const refHist = db.ref(`historial/${id}`);
+      const snap = await refHist.once('value');
+
+      // 🔥 limitar a 100 registros
+      if (snap.numChildren() >= MAX_HISTORIAL) {
+        const primero = Object.keys(snap.val())[0];
+        await refHist.child(primero).remove();
+      }
+
+      await refHist.push({
+        tipo: variableNormalizada,
+        valor,
+        tiempo: new Date().toISOString()
+      });
+    }
 
     console.log(`📥 ${variableNormalizada} (${id}) = ${valor}`);
 
   } catch (err) {
     console.error("❌ Error:", err);
   } finally {
-    // 🔥 liberar bloqueo (pequeño delay evita rebotes)
     setTimeout(() => bloqueando = false, 100);
   }
 
@@ -144,7 +168,6 @@ let estadoAnterior = {};
 
 db.ref('surcos').on('value', snapshot => {
 
-  // 🚨 SI VIENE DE MQTT → NO REPUBLICAR
   if (bloqueando) return;
 
   const data = snapshot.val();
@@ -155,20 +178,12 @@ db.ref('surcos').on('value', snapshot => {
     const actual = data[id];
     const anterior = estadoAnterior[id] || {};
 
-    // =========================
     // 🎮 modo
-    // =========================
     if (actual.modo !== anterior.modo) {
-      client.publish(
-        `riego/surco/${id}/modo`,
-        actual.modo,
-        { qos: 0 }
-      );
+      client.publish(`riego/surco/${id}/modo`, actual.modo, { qos: 0 });
     }
 
-    // =========================
     // 💧 riego → válvula
-    // =========================
     if (actual.riego !== anterior.riego) {
       client.publish(
         `riego/surco/${id}/valvula`,
@@ -177,9 +192,7 @@ db.ref('surcos').on('value', snapshot => {
       );
     }
 
-    // =========================
     // ⚙️ umbrales
-    // =========================
     if (JSON.stringify(actual.umbrales) !== JSON.stringify(anterior.umbrales)) {
       client.publish(
         `riego/surco/${id}/umbrales`,
@@ -188,7 +201,7 @@ db.ref('surcos').on('value', snapshot => {
       );
     }
 
-    // 🔥 CLON REAL (CLAVE DEL ÉXITO)
+    // 🔥 CLON REAL
     estadoAnterior[id] = JSON.parse(JSON.stringify(actual));
   }
 
@@ -198,7 +211,7 @@ db.ref('surcos').on('value', snapshot => {
 // 🌐 API SIMPLE
 // =============================
 app.get('/', (req, res) => {
-  res.send('🔥 Backend MQTT ↔ Firebase estable y sin loops');
+  res.send('🔥 Backend MQTT ↔ Firebase estable y PRO');
 });
 
 // =============================
@@ -206,44 +219,4 @@ app.get('/', (req, res) => {
 // =============================
 app.listen(PORT, () => {
   console.log(`🌐 Servidor en puerto ${PORT}`);
-});
-
-app.get('/nuke-final', async (req, res) => {
-  try {
-    const baseRef = db.ref('historial');
-
-    console.log("🔥 Iniciando limpieza progresiva...");
-
-    const borrarChunk = async () => {
-      const snap = await baseRef.limitToFirst(50).once('value');
-
-      if (!snap.exists()) {
-        console.log("✅ TERMINADO");
-        return false;
-      }
-
-      const updates = {};
-
-      snap.forEach(child => {
-        updates[child.key] = null;
-      });
-
-      await baseRef.update(updates);
-
-      console.log(`🧹 eliminados ${Object.keys(updates).length} nodos`);
-      return true;
-    };
-
-    // 🔁 loop controlado
-    let seguir = true;
-    while (seguir) {
-      seguir = await borrarChunk();
-    }
-
-    res.send('🔥 LIMPIEZA COMPLETA FINALIZADA');
-
-  } catch (err) {
-    console.error(err);
-    res.status(500).send(err.message);
-  }
 });
