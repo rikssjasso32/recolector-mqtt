@@ -31,7 +31,7 @@ const client = mqtt.connect('mqtt://broker.hivemq.com');
 
 client.on('connect', () => {
   console.log('🟢 MQTT conectado');
-  client.subscribe('riego/surco/+/+', { qos: 1 });
+  client.subscribe('riego/surco/+/+', { qos: 0 }); // QoS 0 evita duplicados
 });
 
 // =============================
@@ -56,9 +56,14 @@ const mapaVariables = {
 };
 
 // =============================
-// 🧠 CONTROL DUPLICADOS
+// 🧠 CONTROL DUPLICADOS MQTT
 // =============================
 let ultimoRegistro = {};
+
+// =============================
+// 🚨 CONTROL ANTI-LOOP
+// =============================
+let bloqueando = false;
 
 // =============================
 // 📡 MQTT → FIREBASE
@@ -66,6 +71,8 @@ let ultimoRegistro = {};
 client.on('message', async (topic, message) => {
 
   try {
+    bloqueando = true; // 🔥 BLOQUEAR ciclo
+
     let valor = message.toString();
     const [, , surcoId, variable] = topic.split('/');
     const id = parseInt(surcoId);
@@ -74,6 +81,7 @@ client.on('message', async (topic, message) => {
 
     const variableNormalizada = mapaVariables[variable] || variable;
 
+    // 🔁 evitar duplicados exactos
     const clave = `${id}_${variableNormalizada}`;
     if (ultimoRegistro[clave] === valor) return;
     ultimoRegistro[clave] = valor;
@@ -110,7 +118,7 @@ client.on('message', async (topic, message) => {
     }
 
     // =========================
-    // 📜 HISTORIAL
+    // 📜 HISTORIAL (solo cambios reales)
     // =========================
     await db.ref(`historial/${id}`).push({
       tipo: variableNormalizada,
@@ -122,6 +130,9 @@ client.on('message', async (topic, message) => {
 
   } catch (err) {
     console.error("❌ Error:", err);
+  } finally {
+    // 🔥 liberar bloqueo (pequeño delay evita rebotes)
+    setTimeout(() => bloqueando = false, 100);
   }
 
 });
@@ -133,6 +144,9 @@ let estadoAnterior = {};
 
 db.ref('surcos').on('value', snapshot => {
 
+  // 🚨 SI VIENE DE MQTT → NO REPUBLICAR
+  if (bloqueando) return;
+
   const data = snapshot.val();
   if (!data) return;
 
@@ -141,30 +155,41 @@ db.ref('surcos').on('value', snapshot => {
     const actual = data[id];
     const anterior = estadoAnterior[id] || {};
 
+    // =========================
     // 🎮 modo
+    // =========================
     if (actual.modo !== anterior.modo) {
-      client.publish(`riego/surco/${id}/modo`, actual.modo, { qos: 1 });
+      client.publish(
+        `riego/surco/${id}/modo`,
+        actual.modo,
+        { qos: 0 }
+      );
     }
 
+    // =========================
     // 💧 riego → válvula
+    // =========================
     if (actual.riego !== anterior.riego) {
       client.publish(
         `riego/surco/${id}/valvula`,
         actual.riego ? "ON" : "OFF",
-        { qos: 1 }
+        { qos: 0 }
       );
     }
 
+    // =========================
     // ⚙️ umbrales
+    // =========================
     if (JSON.stringify(actual.umbrales) !== JSON.stringify(anterior.umbrales)) {
       client.publish(
         `riego/surco/${id}/umbrales`,
         JSON.stringify(actual.umbrales),
-        { qos: 1 }
+        { qos: 0 }
       );
     }
 
-    estadoAnterior[id] = actual;
+    // 🔥 CLON REAL (CLAVE DEL ÉXITO)
+    estadoAnterior[id] = JSON.parse(JSON.stringify(actual));
   }
 
 });
@@ -173,7 +198,7 @@ db.ref('surcos').on('value', snapshot => {
 // 🌐 API SIMPLE
 // =============================
 app.get('/', (req, res) => {
-  res.send('🔥 Backend MQTT ↔ Firebase funcionando');
+  res.send('🔥 Backend MQTT ↔ Firebase estable y sin loops');
 });
 
 // =============================
