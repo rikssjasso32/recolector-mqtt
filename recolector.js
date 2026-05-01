@@ -84,7 +84,6 @@ client.on('message', async (topic, message) => {
     const [, , surcoId, variable] = topic.split('/');
     const id = parseInt(surcoId);
 
-    // 🔒 protección
     if (!id || isNaN(id)) return;
     if (!VARIABLES_VALIDAS.includes(variable)) return;
 
@@ -96,7 +95,7 @@ client.on('message', async (topic, message) => {
     ultimoRegistro[clave] = valor;
 
     // =========================
-    // 🌡️ SENSORES
+    // 🌡️ SENSORES → FIREBASE
     // =========================
     if (["temp_aire", "hum_aire", "hum_tierra"].includes(variable)) {
       await db.ref(`surcos/${id}/sensores/${variableNormalizada}`).set(valor);
@@ -110,7 +109,7 @@ client.on('message', async (topic, message) => {
     }
 
     // =========================
-    // 💧 VÁLVULA → RIEGO
+    // 💧 VÁLVULA
     // =========================
     if (variable === "valvula") {
       await db.ref(`surcos/${id}/riego`).set(valor === "ON");
@@ -129,13 +128,18 @@ client.on('message', async (topic, message) => {
     // =========================
     // 📜 HISTORIAL INTELIGENTE
     // =========================
-    if (["valvula", "modo"].includes(variable)) {
+    if (
+      ["valvula", "modo", "temp_aire", "hum_aire", "hum_tierra"]
+      .includes(variable)
+    ) {
 
       const ahora = Date.now();
       const keyCambio = `${id}_${variable}`;
 
-      // 🔥 debounce 2 segundos
-      if (ultimoCambio[keyCambio] && ahora - ultimoCambio[keyCambio] < 2000) return;
+      // 🔥 debounce (2s acciones, 5s sensores)
+      const tiempoMin = ["valvula", "modo"].includes(variable) ? 2000 : 5000;
+
+      if (ultimoCambio[keyCambio] && ahora - ultimoCambio[keyCambio] < tiempoMin) return;
       ultimoCambio[keyCambio] = ahora;
 
       // 🔥 evitar repetir mismo valor consecutivo
@@ -187,12 +191,10 @@ db.ref('surcos').on('value', snapshot => {
     const actual = data[id];
     const anterior = estadoAnterior[id] || {};
 
-    // 🎮 modo
     if (actual.modo !== anterior.modo) {
       client.publish(`riego/surco/${id}/modo`, actual.modo, { qos: 0 });
     }
 
-    // 💧 riego → válvula
     if (actual.riego !== anterior.riego) {
       client.publish(
         `riego/surco/${id}/valvula`,
@@ -201,7 +203,6 @@ db.ref('surcos').on('value', snapshot => {
       );
     }
 
-    // ⚙️ umbrales
     if (JSON.stringify(actual.umbrales) !== JSON.stringify(anterior.umbrales)) {
       client.publish(
         `riego/surco/${id}/umbrales`,
@@ -210,7 +211,6 @@ db.ref('surcos').on('value', snapshot => {
       );
     }
 
-    // 🔥 CLON REAL
     estadoAnterior[id] = JSON.parse(JSON.stringify(actual));
   }
 
@@ -224,7 +224,7 @@ app.get('/', (req, res) => {
 });
 
 // =============================
-// 🚀 INICIAR SERVIDOR
+// 🚀 SERVIDOR
 // =============================
 app.listen(PORT, () => {
   console.log(`🌐 Servidor en puerto ${PORT}`);
