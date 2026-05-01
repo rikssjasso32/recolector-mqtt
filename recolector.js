@@ -131,42 +131,36 @@ client.on('message', async (topic, message) => {
 // =============================
 let estadoAnterior = {};
 
-db.ref('surcos').on('value', snapshot => {
+db.ref('surcos').on('child_changed', snapshot => {
 
-  const data = snapshot.val();
-  if (!data) return;
+  const id = snapshot.key;
+  const actual = snapshot.val();
+  const anterior = estadoAnterior[id] || {};
 
-  for (let id in data) {
-
-    const actual = data[id];
-    const anterior = estadoAnterior[id] || {};
-
-    // 🎮 modo
-    if (actual.modo !== anterior.modo) {
-      client.publish(`riego/surco/${id}/modo`, actual.modo, { qos: 1 });
-    }
-
-    // 💧 riego → válvula
-    if (actual.riego !== anterior.riego) {
-      client.publish(
-        `riego/surco/${id}/valvula`,
-        actual.riego ? "ON" : "OFF",
-        { qos: 1 }
-      );
-    }
-
-    // ⚙️ umbrales
-    if (JSON.stringify(actual.umbrales) !== JSON.stringify(anterior.umbrales)) {
-      client.publish(
-        `riego/surco/${id}/umbrales`,
-        JSON.stringify(actual.umbrales),
-        { qos: 1 }
-      );
-    }
-
-    estadoAnterior[id] = actual;
+  // 🎮 modo
+  if (actual.modo !== anterior.modo) {
+    client.publish(`riego/surco/${id}/modo`, actual.modo, { qos: 1 });
   }
 
+  // 💧 riego
+  if (actual.riego !== anterior.riego) {
+    client.publish(
+      `riego/surco/${id}/valvula`,
+      actual.riego ? "ON" : "OFF",
+      { qos: 1 }
+    );
+  }
+
+  // ⚙️ UMBRALES (🔥 AQUÍ SE ARREGLA TODO)
+  if (actual.umbrales) {
+    client.publish(
+      `riego/surco/${id}/umbrales`,
+      JSON.stringify(actual.umbrales),
+      { qos: 1 }
+    );
+  }
+
+  estadoAnterior[id] = actual;
 });
 
 // =============================
