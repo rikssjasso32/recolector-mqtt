@@ -78,40 +78,39 @@ client.on('message', async (topic, message) => {
     if (ultimoRegistro[clave] === valor) return;
     ultimoRegistro[clave] = valor;
 
-    // =========================
-    // 🌡️ SENSORES
-    // =========================
+    // 🌡️ sensores
     if (["temp_aire", "hum_aire", "hum_tierra"].includes(variable)) {
       await db.ref(`surcos/${id}/sensores/${variableNormalizada}`).set(valor);
     }
 
-    // =========================
-    // 🎮 MODO
-    // =========================
+    // 🎮 modo
     if (variable === "modo") {
       await db.ref(`surcos/${id}/modo`).set(valor);
     }
 
-    // =========================
-    // 💧 VÁLVULA → RIEGO
-    // =========================
+    // 💧 válvula
     if (variable === "valvula") {
       await db.ref(`surcos/${id}/riego`).set(valor === "ON");
     }
 
-    // =========================
-    // ⚙️ UMBRALES
-    // =========================
+    // ⚙️ umbrales
     if (variable === "umbrales") {
       try {
         const data = JSON.parse(valor);
-        await db.ref(`surcos/${id}/umbrales`).set(data);
+
+        // 🔥 evitar re-escribir si es igual
+        const refUmbral = db.ref(`surcos/${id}/umbrales`);
+        const snap = await refUmbral.get();
+        const actual = snap.val();
+
+        if (JSON.stringify(actual) !== JSON.stringify(data)) {
+          await refUmbral.set(data);
+        }
+
       } catch (e) {}
     }
 
-    // =========================
-    // 📜 HISTORIAL
-    // =========================
+    // 📜 historial
     await db.ref(`historial/${id}`).push({
       tipo: variableNormalizada,
       valor,
@@ -131,47 +130,67 @@ client.on('message', async (topic, message) => {
 // =============================
 let estadoAnterior = {};
 
-db.ref('surcos').on('child_changed', snapshot => {
+db.ref('surcos').on('value', snapshot => {
 
-  const id = snapshot.key;
-  const actual = snapshot.val();
-  const anterior = estadoAnterior[id] || {};
+  const data = snapshot.val();
+  if (!data) return;
 
-  // 🎮 modo
-  if (actual.modo !== anterior.modo) {
-    client.publish(`riego/surco/${id}/modo`, actual.modo, { qos: 1 });
+  for (let id in data) {
+
+    const actual = data[id];
+    const anterior = estadoAnterior[id] || {};
+
+    // 🎮 modo
+    if (actual.modo !== anterior.modo) {
+      client.publish(`riego/surco/${id}/modo`, actual.modo, { qos: 1 });
+    }
+
+    // 💧 válvula
+    if (actual.riego !== anterior.riego) {
+      client.publish(
+        `riego/surco/${id}/valvula`,
+        actual.riego ? "ON" : "OFF",
+        { qos: 1 }
+      );
+    }
+
+    // ⚙️ UMBRALES (🔥 SOLO SI CAMBIAN)
+    if (
+      actual.umbrales &&
+      (
+        actual.umbrales.humTierraMin !== anterior.umbrales?.humTierraMin ||
+        actual.umbrales.humTierraMax !== anterior.umbrales?.humTierraMax
+      )
+    ) {
+
+      const clave = `${id}_umbrales`;
+      const valorStr = JSON.stringify(actual.umbrales);
+
+      // 🔥 anti-spam
+      if (ultimoRegistro[clave] === valorStr) continue;
+      ultimoRegistro[clave] = valorStr;
+
+      client.publish(
+        `riego/surco/${id}/umbrales`,
+        valorStr,
+        { qos: 1 }
+      );
+    }
+
+    estadoAnterior[id] = actual;
   }
 
-  // 💧 riego
-  if (actual.riego !== anterior.riego) {
-    client.publish(
-      `riego/surco/${id}/valvula`,
-      actual.riego ? "ON" : "OFF",
-      { qos: 1 }
-    );
-  }
-
-  // ⚙️ UMBRALES (🔥 AQUÍ SE ARREGLA TODO)
-  if (actual.umbrales) {
-    client.publish(
-      `riego/surco/${id}/umbrales`,
-      JSON.stringify(actual.umbrales),
-      { qos: 1 }
-    );
-  }
-
-  estadoAnterior[id] = actual;
 });
 
 // =============================
-// 🌐 API SIMPLE
+// 🌐 API
 // =============================
 app.get('/', (req, res) => {
   res.send('🔥 Backend MQTT ↔ Firebase funcionando');
 });
 
 // =============================
-// 🚀 INICIAR SERVIDOR
+// 🚀 INICIAR
 // =============================
 app.listen(PORT, () => {
   console.log(`🌐 Servidor en puerto ${PORT}`);
