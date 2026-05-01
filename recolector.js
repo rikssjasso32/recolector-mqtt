@@ -70,6 +70,7 @@ let bloqueando = false;
 // =============================
 const MAX_HISTORIAL = 100;
 let ultimoCambio = {};
+let ultimoHistorial = {};
 
 // =============================
 // 📡 MQTT → FIREBASE
@@ -83,11 +84,13 @@ client.on('message', async (topic, message) => {
     const [, , surcoId, variable] = topic.split('/');
     const id = parseInt(surcoId);
 
+    // 🔒 protección
+    if (!id || isNaN(id)) return;
     if (!VARIABLES_VALIDAS.includes(variable)) return;
 
     const variableNormalizada = mapaVariables[variable] || variable;
 
-    // 🔁 evitar duplicados exactos
+    // 🔁 evitar duplicados exactos MQTT
     const clave = `${id}_${variableNormalizada}`;
     if (ultimoRegistro[clave] === valor) return;
     ultimoRegistro[clave] = valor;
@@ -128,19 +131,25 @@ client.on('message', async (topic, message) => {
     // =========================
     if (["valvula", "modo"].includes(variable)) {
 
-      const keyHist = `${id}_${variable}`;
       const ahora = Date.now();
+      const keyCambio = `${id}_${variable}`;
 
-      // 🔥 evitar spam (2 segundos)
-      if (ultimoCambio[keyHist] && ahora - ultimoCambio[keyHist] < 2000) return;
-      ultimoCambio[keyHist] = ahora;
+      // 🔥 debounce 2 segundos
+      if (ultimoCambio[keyCambio] && ahora - ultimoCambio[keyCambio] < 2000) return;
+      ultimoCambio[keyCambio] = ahora;
+
+      // 🔥 evitar repetir mismo valor consecutivo
+      const keyHistFull = `${id}_${variable}_${valor}`;
+      if (ultimoHistorial[keyHistFull]) return;
+      ultimoHistorial[keyHistFull] = true;
 
       const refHist = db.ref(`historial/${id}`);
-      const snap = await refHist.once('value');
 
-      // 🔥 limitar a 100 registros
-      if (snap.numChildren() >= MAX_HISTORIAL) {
-        const primero = Object.keys(snap.val())[0];
+      // 🔥 limitar tamaño
+      const totalSnap = await refHist.once('value');
+
+      if (totalSnap.exists() && totalSnap.numChildren() >= MAX_HISTORIAL) {
+        const primero = Object.keys(totalSnap.val())[0];
         await refHist.child(primero).remove();
       }
 
@@ -208,10 +217,10 @@ db.ref('surcos').on('value', snapshot => {
 });
 
 // =============================
-// 🌐 API SIMPLE
+// 🌐 API
 // =============================
 app.get('/', (req, res) => {
-  res.send('🔥 Backend MQTT ↔ Firebase estable y PRO');
+  res.send('🔥 Backend MQTT ↔ Firebase PRO funcionando');
 });
 
 // =============================
