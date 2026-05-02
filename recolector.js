@@ -75,7 +75,8 @@ let procesandoAuto = false;
 client.on('message', async (topic, message) => {
 
   try {
-    bloqueando = true;
+    // 🔥 SOLO bloquear escritura Firebase, no lógica
+    const bloqueandoLocal = true;
 
     const valor = message.toString();
     const [, , surcoId, variable] = topic.split('/');
@@ -87,12 +88,21 @@ client.on('message', async (topic, message) => {
 
     // 🔁 evitar duplicados exactos
     const clave = `${id}_${variableNormalizada}`;
-    if (ultimoRegistro[clave] === valor) return;
+    // 🔥 permitir humedad aunque sea igual (clave para automático)
+    if (
+      variable !== "hum_tierra" &&
+      ultimoRegistro[clave] === valor
+    ) return;
     ultimoRegistro[clave] = valor;
 
     // 🔥 THROTTLE (máx 1 cada 2 segundos)
     const ahora = Date.now();
-    if (ultimoEnvio[clave] && ahora - ultimoEnvio[clave] < 2000) return;
+    // 🔥 NO limitar humedad (es crítica para automático)
+    if (
+      variable !== "hum_tierra" &&
+      ultimoEnvio[clave] &&
+      ahora - ultimoEnvio[clave] < 2000
+    ) return;
     ultimoEnvio[clave] = ahora;
 
     // =========================
@@ -100,8 +110,16 @@ client.on('message', async (topic, message) => {
     // =========================
     if (["temp_aire", "hum_aire", "hum_tierra"].includes(variable)) {
       await db.ref(`surcos/${id}/sensores/${variableNormalizada}`)
-        .set(valor)
-        .catch(err => console.error("🔥 Firebase error:", err));
+        .set(valor);
+
+      // 🔥 AUTOMÁTICO EN TIEMPO REAL
+      if (variable === "hum_tierra") {
+
+        const snapshot = await db.ref(`surcos/${id}`).once('value');
+        const estado = snapshot.val();
+
+        await evaluarAutomaticoBackend(id, estado);
+      }
     }
 
     // =========================
@@ -162,19 +180,13 @@ let estadoAnterior = {};
 
 db.ref('surcos').on('value', async snapshot => {
 
-  if (bloqueando || procesandoAuto) return;
-
   const data = snapshot.val();
   if (!data) return;
-
-  procesandoAuto = true;
 
   for (let id in data) {
 
     const actual = data[id];
     const anterior = estadoAnterior[id] || {};
-
-    await evaluarAutomaticoBackend(id, actual);
 
     if (actual.modo !== anterior.modo) {
       client.publish(`riego/surco/${id}/modo`, actual.modo);
@@ -205,8 +217,6 @@ db.ref('surcos').on('value', async snapshot => {
 
     estadoAnterior[id] = JSON.parse(JSON.stringify(actual));
   }
-
-  procesandoAuto = false;
 
 });
 
