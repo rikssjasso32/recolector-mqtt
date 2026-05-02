@@ -25,28 +25,17 @@ app.use(express.json());
 const PORT = process.env.PORT || 3000;
 
 // =============================
-// 🔗 MQTT (RECONEXIÓN SEGURA)
+// 🔗 MQTT
 // =============================
-const client = mqtt.connect('mqtt://broker.hivemq.com', {
-  reconnectPeriod: 3000, // reconecta cada 3s
-  keepalive: 60
-});
+const client = mqtt.connect('mqtt://broker.hivemq.com');
 
 client.on('connect', () => {
   console.log('🟢 MQTT conectado');
-  client.subscribe('riego/surco/+/+', { qos: 0 });
-});
-
-client.on('reconnect', () => {
-  console.log('🟡 Reintentando conexión MQTT...');
-});
-
-client.on('error', (err) => {
-  console.error('🔴 Error MQTT:', err.message);
+  client.subscribe('riego/surco/+/+', { qos: 1 });
 });
 
 // =============================
-// 🔒 VARIABLES
+// 🔒 VARIABLES PERMITIDAS
 // =============================
 const VARIABLES_VALIDAS = [
   "temp_aire",
@@ -57,67 +46,56 @@ const VARIABLES_VALIDAS = [
   "umbrales"
 ];
 
+// =============================
+// 🧠 NORMALIZACIÓN
+// =============================
 const mapaVariables = {
   temp_aire: "tempAire",
   hum_aire: "humAire",
   hum_tierra: "humTierra"
 };
 
+// =============================
+// 🧠 CONTROL DUPLICADOS
+// =============================
 let ultimoRegistro = {};
-let ultimoEnvio = {}; // 🔥 throttle
-let bloqueando = false;
 
 // =============================
-// 📡 MQTT → FIREBASE (OPTIMIZADO)
+// 📡 MQTT → FIREBASE
 // =============================
 client.on('message', async (topic, message) => {
-
   try {
-    bloqueando = true;
-
-    const valor = message.toString();
+    let valor = message.toString();
     const [, , surcoId, variable] = topic.split('/');
     const id = parseInt(surcoId);
 
     if (!VARIABLES_VALIDAS.includes(variable)) return;
 
     const variableNormalizada = mapaVariables[variable] || variable;
-
-    // 🔁 evitar duplicados exactos
     const clave = `${id}_${variableNormalizada}`;
+
     if (ultimoRegistro[clave] === valor) return;
     ultimoRegistro[clave] = valor;
-
-    // 🔥 THROTTLE (máx 1 cada 2 segundos)
-    const ahora = Date.now();
-    if (ultimoEnvio[clave] && ahora - ultimoEnvio[clave] < 2000) return;
-    ultimoEnvio[clave] = ahora;
 
     // =========================
     // 🌡️ SENSORES
     // =========================
     if (["temp_aire", "hum_aire", "hum_tierra"].includes(variable)) {
-      await db.ref(`surcos/${id}/sensores/${variableNormalizada}`)
-        .set(valor)
-        .catch(err => console.error("🔥 Firebase error:", err));
+      await db.ref(`surcos/${id}/sensores/${variableNormalizada}`).set(valor);
     }
 
     // =========================
     // 🎮 MODO
     // =========================
     if (variable === "modo") {
-      await db.ref(`surcos/${id}/modo`)
-        .set(valor)
-        .catch(err => console.error("🔥 Firebase error:", err));
+      await db.ref(`surcos/${id}/modo`).set(valor);
     }
 
     // =========================
     // 💧 VÁLVULA → RIEGO
     // =========================
     if (variable === "valvula") {
-      await db.ref(`surcos/${id}/riego`)
-        .set(valor === "ON")
-        .catch(err => console.error("🔥 Firebase error:", err));
+      await db.ref(`surcos/${id}/riego`).set(valor === "ON");
     }
 
     // =========================
@@ -126,87 +104,71 @@ client.on('message', async (topic, message) => {
     if (variable === "umbrales") {
       try {
         const data = JSON.parse(valor);
-        await db.ref(`surcos/${id}/umbrales`)
-          .set(data)
-          .catch(err => console.error("🔥 Firebase error:", err));
+        await db.ref(`surcos/${id}/umbrales`).set(data);
       } catch (e) {}
     }
 
     // =========================
-    // 📜 HISTORIAL (CONTROLADO)
+    // 📜 HISTORIAL
     // =========================
-    if (Math.random() < 0.3) { // 🔥 solo 30% de eventos
-      await db.ref(`historial/${id}`).push({
-        tipo: variableNormalizada,
-        valor,
-        tiempo: new Date().toISOString()
-      }).catch(err => console.error("🔥 Firebase error:", err));
-    }
+    await db.ref(`historial/${id}`).push({
+      tipo: variableNormalizada,
+      valor,
+      tiempo: new Date().toISOString()
+    });
 
     console.log(`📥 ${variableNormalizada} (${id}) = ${valor}`);
 
   } catch (err) {
-    console.error("❌ Error general:", err);
-  } finally {
-    setTimeout(() => bloqueando = false, 100);
+    console.error("❌ Error:", err);
   }
-
 });
 
 // =============================
-// 🔁 FIREBASE → MQTT (SIN LOOP)
+// 🔁 FIREBASE → MQTT
 // =============================
 let estadoAnterior = {};
 
 db.ref('surcos').on('value', snapshot => {
-
-  if (bloqueando) return;
-
   const data = snapshot.val();
   if (!data) return;
 
   for (let id in data) {
-
     const actual = data[id];
     const anterior = estadoAnterior[id] || {};
 
+    // 🎮 modo
     if (actual.modo !== anterior.modo) {
-      client.publish(`riego/surco/${id}/modo`, actual.modo);
+      client.publish(`riego/surco/${id}/modo`, actual.modo, { qos: 1 });
     }
 
+    // 💧 riego → válvula
     if (actual.riego !== anterior.riego) {
       client.publish(
         `riego/surco/${id}/valvula`,
-        actual.riego ? "ON" : "OFF"
+        actual.riego ? "ON" : "OFF",
+        { qos: 1 }
       );
     }
 
+    // ⚙️ umbrales
     if (JSON.stringify(actual.umbrales) !== JSON.stringify(anterior.umbrales)) {
       client.publish(
         `riego/surco/${id}/umbrales`,
-        JSON.stringify(actual.umbrales)
+        JSON.stringify(actual.umbrales),
+        { qos: 1 }
       );
     }
 
-    estadoAnterior[id] = JSON.parse(JSON.stringify(actual));
+    estadoAnterior[id] = actual;
   }
-
-}, (error) => {
-  console.error("🔥 Firebase listener error:", error);
 });
 
 // =============================
-// 🫀 KEEP ALIVE (ANTI-CRASH)
-// =============================
-setInterval(() => {
-  console.log("🫀 Backend vivo:", new Date().toLocaleTimeString());
-}, 10000);
-
-// =============================
-// 🌐 API
+// 🌐 API SIMPLE
 // =============================
 app.get('/', (req, res) => {
-  res.send('🔥 Backend estable PRO funcionando');
+  res.send('🔥 Backend MQTT ↔ Firebase funcionando');
 });
 
 // =============================
