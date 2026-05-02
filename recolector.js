@@ -181,12 +181,24 @@ db.ref('surcos').on('value', snapshot => {
       );
     }
 
-    if (JSON.stringify(actual.umbrales) !== JSON.stringify(anterior.umbrales)) {
-      client.publish(
-        `riego/surco/${id}/umbrales`,
-        JSON.stringify(actual.umbrales)
-      );
-    }
+  const uA = actual.umbrales || {};
+  const uB = anterior.umbrales || {};
+
+  // 🔥 comparar campo por campo (evita falsos negativos)
+  if (
+    uA.humTierraMin !== uB.humTierraMin ||
+    uA.humTierraMax !== uB.humTierraMax
+  ) {
+    console.log("📤 Enviando umbrales:", uA);
+
+    client.publish(
+      `riego/surco/${id}/umbrales`,
+      JSON.stringify({
+        humTierraMin: Number(uA.humTierraMin) || 0,
+        humTierraMax: Number(uA.humTierraMax) || 0
+      })
+    );
+  }
 
     estadoAnterior[id] = JSON.parse(JSON.stringify(actual));
   }
