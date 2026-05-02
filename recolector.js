@@ -67,6 +67,8 @@ let ultimoRegistro = {};
 let ultimoEnvio = {}; // 🔥 throttle
 let bloqueando = false;
 
+let procesandoAuto = false;
+
 // =============================
 // 📡 MQTT → FIREBASE (OPTIMIZADO)
 // =============================
@@ -158,17 +160,21 @@ client.on('message', async (topic, message) => {
 // =============================
 let estadoAnterior = {};
 
-db.ref('surcos').on('value', snapshot => {
+db.ref('surcos').on('value', async snapshot => {
 
-  if (bloqueando) return;
+  if (bloqueando || procesandoAuto) return;
 
   const data = snapshot.val();
   if (!data) return;
+
+  procesandoAuto = true;
 
   for (let id in data) {
 
     const actual = data[id];
     const anterior = estadoAnterior[id] || {};
+
+    await evaluarAutomaticoBackend(id, actual);
 
     if (actual.modo !== anterior.modo) {
       client.publish(`riego/surco/${id}/modo`, actual.modo);
@@ -181,30 +187,27 @@ db.ref('surcos').on('value', snapshot => {
       );
     }
 
-  const uA = actual.umbrales || {};
-  const uB = anterior.umbrales || {};
+    const uA = actual.umbrales || {};
+    const uB = anterior.umbrales || {};
 
-  // 🔥 comparar campo por campo (evita falsos negativos)
-  if (
-    uA.humTierraMin !== uB.humTierraMin ||
-    uA.humTierraMax !== uB.humTierraMax
-  ) {
-    console.log("📤 Enviando umbrales:", uA);
-
-    client.publish(
-      `riego/surco/${id}/umbrales`,
-      JSON.stringify({
-        humTierraMin: Number(uA.humTierraMin) || 0,
-        humTierraMax: Number(uA.humTierraMax) || 0
-      })
-    );
-  }
+    if (
+      uA.humTierraMin !== uB.humTierraMin ||
+      uA.humTierraMax !== uB.humTierraMax
+    ) {
+      client.publish(
+        `riego/surco/${id}/umbrales`,
+        JSON.stringify({
+          humTierraMin: Number(uA.humTierraMin) || 0,
+          humTierraMax: Number(uA.humTierraMax) || 0
+        })
+      );
+    }
 
     estadoAnterior[id] = JSON.parse(JSON.stringify(actual));
   }
 
-}, (error) => {
-  console.error("🔥 Firebase listener error:", error);
+  procesandoAuto = false;
+
 });
 
 // =============================
@@ -227,3 +230,42 @@ app.get('/', (req, res) => {
 app.listen(PORT, () => {
   console.log(`🌐 Servidor en puerto ${PORT}`);
 });
+
+async function evaluarAutomaticoBackend(id, e){
+
+  if (!e) return;
+  if (e.modo !== "AUTOMATICO") return;
+
+  const humedad = parseFloat(e.sensores?.humTierra);
+  if (isNaN(humedad)) return;
+
+  const u = e.umbrales;
+  if (!u) return;
+
+  const min = Number(u.humTierraMin) || 0;
+  const max = Number(u.humTierraMax) || 0;
+
+  if (min === 0 && max === 0) return;
+  if (min >= max) return;
+
+  const estadoActual = e.riego ? "ON" : "OFF";
+  let nuevoEstado = estadoActual;
+
+  if (estadoActual === "OFF" && humedad < min) {
+    nuevoEstado = "ON";
+  }
+
+  if (estadoActual === "ON" && humedad > max) {
+    nuevoEstado = "OFF";
+  }
+
+  if (nuevoEstado !== estadoActual) {
+
+    console.log(`🌱 BACKEND AUTO ${id}: ${estadoActual} → ${nuevoEstado}`);
+
+    client.publish(`riego/surco/${id}/valvula`, nuevoEstado);
+
+    await db.ref(`surcos/${id}/riego`)
+      .set(nuevoEstado === "ON");
+  }
+}
