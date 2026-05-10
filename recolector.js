@@ -153,21 +153,14 @@ client.on('message', async (topic, message) => {
     }
 
     // =========================
-    // 📜 HISTORIAL REAL
+    // 📜 HISTORIAL (CONTROLADO)
     // =========================
-    if (
-      variable === "modo" ||
-      variable === "valvula"
-    ) {
-
+    if (Math.random() < 0.3) { // 🔥 solo 30% de eventos
       await db.ref(`historial/${id}`).push({
-        surco: id,
-        variable,
+        tipo: variableNormalizada,
         valor,
         tiempo: new Date().toISOString()
-      })
-      .catch(err => console.error("🔥 Firebase error:", err));
-
+      }).catch(err => console.error("🔥 Firebase error:", err));
     }
 
     console.log(`📥 ${variableNormalizada} (${id}) = ${valor}`);
@@ -234,6 +227,12 @@ setInterval(() => {
   console.log("🫀 Backend vivo:", new Date().toLocaleTimeString());
 }, 10000);
 
+// =============================
+// 🌐 API
+// =============================
+app.get('/', (req, res) => {
+  res.send('🔥 Backend estable PRO funcionando');
+});
 
 // =============================
 // 🚀 INICIAR SERVIDOR
