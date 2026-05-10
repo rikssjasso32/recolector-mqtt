@@ -25,28 +25,17 @@ app.use(express.json());
 const PORT = process.env.PORT || 3000;
 
 // =============================
-// 🔗 MQTT (RECONEXIÓN SEGURA)
+// 🔗 MQTT
 // =============================
-const client = mqtt.connect('mqtt://broker.hivemq.com', {
-  reconnectPeriod: 3000, // reconecta cada 3s
-  keepalive: 60
-});
+const client = mqtt.connect('mqtt://broker.hivemq.com');
 
 client.on('connect', () => {
   console.log('🟢 MQTT conectado');
-  client.subscribe('riego/surco/+/+', { qos: 0 });
-});
-
-client.on('reconnect', () => {
-  console.log('🟡 Reintentando conexión MQTT...');
-});
-
-client.on('error', (err) => {
-  console.error('🔴 Error MQTT:', err.message);
+  client.subscribe('riego/surco/+/+', { qos: 1 });
 });
 
 // =============================
-// 🔒 VARIABLES
+// 🔒 VARIABLES PERMITIDAS
 // =============================
 const VARIABLES_VALIDAS = [
   "temp_aire",
@@ -57,28 +46,27 @@ const VARIABLES_VALIDAS = [
   "umbrales"
 ];
 
+// =============================
+// 🧠 NORMALIZACIÓN
+// =============================
 const mapaVariables = {
   temp_aire: "tempAire",
   hum_aire: "humAire",
   hum_tierra: "humTierra"
 };
 
+// =============================
+// 🧠 CONTROL DUPLICADOS
+// =============================
 let ultimoRegistro = {};
-let ultimoEnvio = {}; // 🔥 throttle
-let bloqueando = false;
-
-let procesandoAuto = false;
 
 // =============================
-// 📡 MQTT → FIREBASE (OPTIMIZADO)
+// 📡 MQTT → FIREBASE
 // =============================
 client.on('message', async (topic, message) => {
 
   try {
-    // 🔥 SOLO bloquear escritura Firebase, no lógica
-    const bloqueandoLocal = true;
-
-    const valor = message.toString();
+    let valor = message.toString();
     const [, , surcoId, variable] = topic.split('/');
     const id = parseInt(surcoId);
 
@@ -86,58 +74,29 @@ client.on('message', async (topic, message) => {
 
     const variableNormalizada = mapaVariables[variable] || variable;
 
-    // 🔁 evitar duplicados exactos
     const clave = `${id}_${variableNormalizada}`;
-    // 🔥 permitir humedad aunque sea igual (clave para automático)
-    if (
-      variable !== "hum_tierra" &&
-      ultimoRegistro[clave] === valor
-    ) return;
+    if (ultimoRegistro[clave] === valor) return;
     ultimoRegistro[clave] = valor;
-
-    // 🔥 THROTTLE (máx 1 cada 2 segundos)
-    const ahora = Date.now();
-    // 🔥 NO limitar humedad (es crítica para automático)
-    if (
-      variable !== "hum_tierra" &&
-      ultimoEnvio[clave] &&
-      ahora - ultimoEnvio[clave] < 2000
-    ) return;
-    ultimoEnvio[clave] = ahora;
 
     // =========================
     // 🌡️ SENSORES
     // =========================
     if (["temp_aire", "hum_aire", "hum_tierra"].includes(variable)) {
-      await db.ref(`surcos/${id}/sensores/${variableNormalizada}`)
-        .set(valor);
-
-      // 🔥 AUTOMÁTICO EN TIEMPO REAL
-      if (variable === "hum_tierra") {
-
-        const snapshot = await db.ref(`surcos/${id}`).once('value');
-        const estado = snapshot.val();
-
-        await evaluarAutomaticoBackend(id, estado);
-      }
+      await db.ref(`surcos/${id}/sensores/${variableNormalizada}`).set(valor);
     }
 
     // =========================
     // 🎮 MODO
     // =========================
     if (variable === "modo") {
-      await db.ref(`surcos/${id}/modo`)
-        .set(valor)
-        .catch(err => console.error("🔥 Firebase error:", err));
+      await db.ref(`surcos/${id}/modo`).set(valor);
     }
 
     // =========================
     // 💧 VÁLVULA → RIEGO
     // =========================
     if (variable === "valvula") {
-      await db.ref(`surcos/${id}/riego`)
-        .set(valor === "ON")
-        .catch(err => console.error("🔥 Firebase error:", err));
+      await db.ref(`surcos/${id}/riego`).set(valor === "ON");
     }
 
     // =========================
@@ -146,39 +105,33 @@ client.on('message', async (topic, message) => {
     if (variable === "umbrales") {
       try {
         const data = JSON.parse(valor);
-        await db.ref(`surcos/${id}/umbrales`)
-          .set(data)
-          .catch(err => console.error("🔥 Firebase error:", err));
+        await db.ref(`surcos/${id}/umbrales`).set(data);
       } catch (e) {}
     }
 
     // =========================
-    // 📜 HISTORIAL (CONTROLADO)
+    // 📜 HISTORIAL
     // =========================
-    if (Math.random() < 0.3) { // 🔥 solo 30% de eventos
-      await db.ref(`historial/${id}`).push({
-        tipo: variableNormalizada,
-        valor,
-        tiempo: new Date().toISOString()
-      }).catch(err => console.error("🔥 Firebase error:", err));
-    }
+    await db.ref(`historial/${id}`).push({
+      tipo: variableNormalizada,
+      valor,
+      tiempo: new Date().toISOString()
+    });
 
     console.log(`📥 ${variableNormalizada} (${id}) = ${valor}`);
 
   } catch (err) {
-    console.error("❌ Error general:", err);
-  } finally {
-    setTimeout(() => bloqueando = false, 100);
+    console.error("❌ Error:", err);
   }
 
 });
 
 // =============================
-// 🔁 FIREBASE → MQTT (SIN LOOP)
+// 🔁 FIREBASE → MQTT
 // =============================
 let estadoAnterior = {};
 
-db.ref('surcos').on('value', async snapshot => {
+db.ref('surcos').on('value', snapshot => {
 
   const data = snapshot.val();
   if (!data) return;
@@ -188,50 +141,39 @@ db.ref('surcos').on('value', async snapshot => {
     const actual = data[id];
     const anterior = estadoAnterior[id] || {};
 
+    // 🎮 modo
     if (actual.modo !== anterior.modo) {
-      client.publish(`riego/surco/${id}/modo`, actual.modo);
+      client.publish(`riego/surco/${id}/modo`, actual.modo, { qos: 1 });
     }
 
+    // 💧 riego → válvula
     if (actual.riego !== anterior.riego) {
       client.publish(
         `riego/surco/${id}/valvula`,
-        actual.riego ? "ON" : "OFF"
+        actual.riego ? "ON" : "OFF",
+        { qos: 1 }
       );
     }
 
-    const uA = actual.umbrales || {};
-    const uB = anterior.umbrales || {};
-
-    if (
-      uA.humTierraMin !== uB.humTierraMin ||
-      uA.humTierraMax !== uB.humTierraMax
-    ) {
+    // ⚙️ umbrales
+    if (JSON.stringify(actual.umbrales) !== JSON.stringify(anterior.umbrales)) {
       client.publish(
         `riego/surco/${id}/umbrales`,
-        JSON.stringify({
-          humTierraMin: Number(uA.humTierraMin) || 0,
-          humTierraMax: Number(uA.humTierraMax) || 0
-        })
+        JSON.stringify(actual.umbrales),
+        { qos: 1 }
       );
     }
 
-    estadoAnterior[id] = JSON.parse(JSON.stringify(actual));
+    estadoAnterior[id] = actual;
   }
 
 });
 
 // =============================
-// 🫀 KEEP ALIVE (ANTI-CRASH)
-// =============================
-setInterval(() => {
-  console.log("🫀 Backend vivo:", new Date().toLocaleTimeString());
-}, 10000);
-
-// =============================
-// 🌐 API
+// 🌐 API SIMPLE
 // =============================
 app.get('/', (req, res) => {
-  res.send('🔥 Backend estable PRO funcionando');
+  res.send('🔥 Backend MQTT ↔ Firebase funcionando');
 });
 
 // =============================
@@ -240,42 +182,3 @@ app.get('/', (req, res) => {
 app.listen(PORT, () => {
   console.log(`🌐 Servidor en puerto ${PORT}`);
 });
-
-async function evaluarAutomaticoBackend(id, e){
-
-  if (!e) return;
-  if (e.modo !== "AUTOMATICO") return;
-
-  const humedad = parseFloat(e.sensores?.humTierra);
-  if (isNaN(humedad)) return;
-
-  const u = e.umbrales;
-  if (!u) return;
-
-  const min = Number(u.humTierraMin) || 0;
-  const max = Number(u.humTierraMax) || 0;
-
-  if (min === 0 && max === 0) return;
-  if (min >= max) return;
-
-  const estadoActual = e.riego ? "ON" : "OFF";
-  let nuevoEstado = estadoActual;
-
-  if (estadoActual === "OFF" && humedad < min) {
-    nuevoEstado = "ON";
-  }
-
-  if (estadoActual === "ON" && humedad > max) {
-    nuevoEstado = "OFF";
-  }
-
-  if (nuevoEstado !== estadoActual) {
-
-    console.log(`🌱 BACKEND AUTO ${id}: ${estadoActual} → ${nuevoEstado}`);
-
-    client.publish(`riego/surco/${id}/valvula`, nuevoEstado);
-
-    await db.ref(`surcos/${id}/riego`)
-      .set(nuevoEstado === "ON");
-  }
-}
