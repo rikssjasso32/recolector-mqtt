@@ -19,22 +19,26 @@ const db = admin.database();
 // 🚀 SERVIDOR
 // =============================
 const app = express();
+
 app.use(cors());
 app.use(express.json());
 
 const PORT = process.env.PORT || 3000;
 
 // =============================
-// 🔗 MQTT (RECONEXIÓN SEGURA)
+// 🔗 MQTT
 // =============================
 const client = mqtt.connect('mqtt://broker.hivemq.com', {
-  reconnectPeriod: 3000, // reconecta cada 3s
+  reconnectPeriod: 3000,
   keepalive: 60
 });
 
 client.on('connect', () => {
+
   console.log('🟢 MQTT conectado');
-  client.subscribe('riego/surco/+/+', { qos: 0 });
+
+  client.subscribe('riego/surco/+/+');
+
 });
 
 client.on('reconnect', () => {
@@ -64,58 +68,74 @@ const mapaVariables = {
 };
 
 let ultimoRegistro = {};
-let ultimoEnvio = {}; // 🔥 throttle
-let bloqueando = false;
-
-let procesandoAuto = false;
+let ultimoEnvio = {};
 
 // =============================
-// 📡 MQTT → FIREBASE (OPTIMIZADO)
+// 📡 MQTT → FIREBASE
 // =============================
 client.on('message', async (topic, message) => {
 
   try {
-    // 🔥 SOLO bloquear escritura Firebase, no lógica
-    const bloqueandoLocal = true;
 
     const valor = message.toString();
+
     const [, , surcoId, variable] = topic.split('/');
+
     const id = parseInt(surcoId);
 
     if (!VARIABLES_VALIDAS.includes(variable)) return;
 
-    const variableNormalizada = mapaVariables[variable] || variable;
+    const variableNormalizada =
+      mapaVariables[variable] || variable;
 
-    // 🔁 evitar duplicados exactos
+    // =========================
+    // 🔁 EVITAR DUPLICADOS
+    // =========================
     const clave = `${id}_${variableNormalizada}`;
-    // 🔥 permitir humedad aunque sea igual (clave para automático)
+
     if (
       variable !== "hum_tierra" &&
       ultimoRegistro[clave] === valor
-    ) return;
+    ){
+      return;
+    }
+
     ultimoRegistro[clave] = valor;
 
-    // 🔥 THROTTLE (máx 1 cada 2 segundos)
+    // =========================
+    // ⏱️ THROTTLE
+    // =========================
     const ahora = Date.now();
-    // 🔥 NO limitar humedad (es crítica para automático)
+
     if (
       variable !== "hum_tierra" &&
       ultimoEnvio[clave] &&
       ahora - ultimoEnvio[clave] < 2000
-    ) return;
+    ){
+      return;
+    }
+
     ultimoEnvio[clave] = ahora;
 
     // =========================
     // 🌡️ SENSORES
     // =========================
-    if (["temp_aire", "hum_aire", "hum_tierra"].includes(variable)) {
-      await db.ref(`surcos/${id}/sensores/${variableNormalizada}`)
-        .set(valor);
+    if ([
+      "temp_aire",
+      "hum_aire",
+      "hum_tierra"
+    ].includes(variable)) {
 
-      // 🔥 AUTOMÁTICO EN TIEMPO REAL
-      if (variable === "hum_tierra") {
+      await db.ref(
+        `surcos/${id}/sensores/${variableNormalizada}`
+      ).set(valor);
 
-        const snapshot = await db.ref(`surcos/${id}`).once('value');
+      // 🔥 automático
+      if(variable === "hum_tierra"){
+
+        const snapshot =
+          await db.ref(`surcos/${id}`).once('value');
+
         const estado = snapshot.val();
 
         await evaluarAutomaticoBackend(id, estado);
@@ -125,89 +145,103 @@ client.on('message', async (topic, message) => {
     // =========================
     // 🎮 MODO
     // =========================
-    if (variable === "modo") {
+    if(variable === "modo"){
+
       await db.ref(`surcos/${id}/modo`)
-        .set(valor)
-        .catch(err => console.error("🔥 Firebase error:", err));
+        .set(valor);
     }
 
     // =========================
-    // 💧 VÁLVULA → RIEGO
+    // 💧 VÁLVULA
     // =========================
-    if (variable === "valvula") {
+    if(variable === "valvula"){
+
       await db.ref(`surcos/${id}/riego`)
-        .set(valor === "ON")
-        .catch(err => console.error("🔥 Firebase error:", err));
+        .set(valor === "ON");
     }
 
     // =========================
     // ⚙️ UMBRALES
     // =========================
-    if (variable === "umbrales") {
-      try {
+    if(variable === "umbrales"){
+
+      try{
+
         const data = JSON.parse(valor);
+
         await db.ref(`surcos/${id}/umbrales`)
-          .set(data)
-          .catch(err => console.error("🔥 Firebase error:", err));
-      } catch (e) {}
+          .set(data);
+
+      }catch(e){}
     }
 
     // =========================
-    // 📜 HISTORIAL (CONTROLADO)
+    // 📜 HISTORIAL
     // =========================
-    if (Math.random() < 0.3) {
+    await db.ref(`historial/${id}`).push({
 
-      await db.ref(`historial/${id}`).push({
-        variable: variable,
-        valor,
-        tiempo: new Date().toISOString()
-      })
-      .catch(err => console.error("🔥 Firebase error:", err));
-    }
+      variable: variable,
+      valor: valor,
 
-    console.log(`📥 ${variableNormalizada} (${id}) = ${valor}`);
+      tiempo: new Date().toISOString()
 
-  } catch (err) {
-    console.error("❌ Error general:", err);
-  } finally {
-    setTimeout(() => bloqueando = false, 100);
+    });
+
+    console.log(
+      `📥 ${variableNormalizada} (${id}) = ${valor}`
+    );
+
+  } catch(err){
+
+    console.error("❌ Error:", err);
   }
 
 });
 
 // =============================
-// 🔁 FIREBASE → MQTT (SIN LOOP)
+// 🔁 FIREBASE → MQTT
 // =============================
 let estadoAnterior = {};
 
 db.ref('surcos').on('value', async snapshot => {
 
   const data = snapshot.val();
+
   if (!data) return;
 
   for (let id in data) {
 
     const actual = data[id];
+
     const anterior = estadoAnterior[id] || {};
 
-    if (actual.modo !== anterior.modo) {
-      client.publish(`riego/surco/${id}/modo`, actual.modo);
+    // 🎮 modo
+    if(actual.modo !== anterior.modo){
+
+      client.publish(
+        `riego/surco/${id}/modo`,
+        actual.modo
+      );
     }
 
-    if (actual.riego !== anterior.riego) {
+    // 💧 válvula
+    if(actual.riego !== anterior.riego){
+
       client.publish(
         `riego/surco/${id}/valvula`,
         actual.riego ? "ON" : "OFF"
       );
     }
 
+    // ⚙️ umbrales
     const uA = actual.umbrales || {};
     const uB = anterior.umbrales || {};
 
-    if (
+    if(
       uA.humTierraMin !== uB.humTierraMin ||
       uA.humTierraMax !== uB.humTierraMax
-    ) {
+    ){
+
       client.publish(
         `riego/surco/${id}/umbrales`,
         JSON.stringify({
@@ -217,67 +251,144 @@ db.ref('surcos').on('value', async snapshot => {
       );
     }
 
-    estadoAnterior[id] = JSON.parse(JSON.stringify(actual));
+    estadoAnterior[id] =
+      JSON.parse(JSON.stringify(actual));
   }
 
 });
 
 // =============================
-// 🫀 KEEP ALIVE (ANTI-CRASH)
+// 🌱 AUTOMÁTICO BACKEND
 // =============================
-setInterval(() => {
-  console.log("🫀 Backend vivo:", new Date().toLocaleTimeString());
-}, 10000);
-
-// =============================
-// 🌐 API
-// =============================
-app.get('/', (req, res) => {
-  res.send('🔥 Backend estable PRO funcionando');
-});
-
-// =============================
-// 🚀 INICIAR SERVIDOR
-// =============================
-app.listen(PORT, () => {
-  console.log(`🌐 Servidor en puerto ${PORT}`);
-});
-
 async function evaluarAutomaticoBackend(id, e){
 
   if (!e) return;
+
   if (e.modo !== "AUTOMATICO") return;
 
-  const humedad = parseFloat(e.sensores?.humTierra);
+  const humedad =
+    parseFloat(e.sensores?.humTierra);
+
   if (isNaN(humedad)) return;
 
   const u = e.umbrales;
+
   if (!u) return;
 
   const min = Number(u.humTierraMin) || 0;
   const max = Number(u.humTierraMax) || 0;
 
   if (min === 0 && max === 0) return;
+
   if (min >= max) return;
 
-  const estadoActual = e.riego ? "ON" : "OFF";
+  const estadoActual =
+    e.riego ? "ON" : "OFF";
+
   let nuevoEstado = estadoActual;
 
-  if (estadoActual === "OFF" && humedad < min) {
+  if (
+    estadoActual === "OFF" &&
+    humedad < min
+  ){
     nuevoEstado = "ON";
   }
 
-  if (estadoActual === "ON" && humedad > max) {
+  if (
+    estadoActual === "ON" &&
+    humedad > max
+  ){
     nuevoEstado = "OFF";
   }
 
-  if (nuevoEstado !== estadoActual) {
+  if(nuevoEstado !== estadoActual){
 
-    console.log(`🌱 BACKEND AUTO ${id}: ${estadoActual} → ${nuevoEstado}`);
+    console.log(
+      `🌱 AUTO ${id}: ${estadoActual} → ${nuevoEstado}`
+    );
 
-    client.publish(`riego/surco/${id}/valvula`, nuevoEstado);
+    client.publish(
+      `riego/surco/${id}/valvula`,
+      nuevoEstado
+    );
 
     await db.ref(`surcos/${id}/riego`)
       .set(nuevoEstado === "ON");
   }
 }
+
+// =============================
+// 📜 API HISTORIAL
+// =============================
+app.get('/historial', async (req, res) => {
+
+  try{
+
+    const snapshot =
+      await db.ref('historial').once('value');
+
+    const data = snapshot.val() || {};
+
+    let resultado = [];
+
+    Object.keys(data).forEach(surco => {
+
+      const registros = data[surco];
+
+      Object.keys(registros).forEach(key => {
+
+        resultado.push({
+          surco,
+          ...registros[key]
+        });
+
+      });
+
+    });
+
+    resultado.sort((a,b) =>
+      new Date(a.tiempo) - new Date(b.tiempo)
+    );
+
+    res.json(resultado);
+
+  }catch(err){
+
+    console.error(err);
+
+    res.status(500).json({
+      error: "Error obteniendo historial"
+    });
+  }
+
+});
+
+// =============================
+// 🌐 API
+// =============================
+app.get('/', (req, res) => {
+
+  res.send('🔥 Backend funcionando');
+
+});
+
+// =============================
+// 🚀 INICIAR SERVIDOR
+// =============================
+app.listen(PORT, () => {
+
+  console.log(`🌐 Servidor en puerto ${PORT}`);
+
+});
+
+// =============================
+// 🫀 KEEP ALIVE
+// =============================
+setInterval(() => {
+
+  console.log(
+    "🫀 Backend vivo:",
+    new Date().toLocaleTimeString()
+  );
+
+}, 10000);
