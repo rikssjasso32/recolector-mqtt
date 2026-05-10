@@ -234,12 +234,6 @@ setInterval(() => {
   console.log("🫀 Backend vivo:", new Date().toLocaleTimeString());
 }, 10000);
 
-// =============================
-// 🌐 API
-// =============================
-app.get('/', (req, res) => {
-  res.send('🔥 Backend estable PRO funcionando');
-});
 
 // =============================
 // 🚀 INICIAR SERVIDOR
