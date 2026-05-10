@@ -1,281 +1,229 @@
 const mqtt = require('mqtt');
+const fs = require('fs');
 const express = require('express');
 const cors = require('cors');
-const admin = require('firebase-admin');
 
-// =============================
-// 🔥 FIREBASE
-// =============================
-const serviceAccount = JSON.parse(process.env.FIREBASE_KEY);
-
-admin.initializeApp({
-  credential: admin.credential.cert(serviceAccount),
-  databaseURL: "https://riego-app-bb60f-default-rtdb.firebaseio.com"
-});
-
-const db = admin.database();
-
-// =============================
-// 🚀 SERVIDOR
-// =============================
 const app = express();
+
+console.log("🚀 Iniciando servidor...");
+console.log("🌱 ENV SURCO_ID:", process.env.SURCO_ID);
+
 app.use(cors());
 app.use(express.json());
+app.use(express.static("public"));
 
 const PORT = process.env.PORT || 3000;
 
-// =============================
-// 🔗 MQTT (RECONEXIÓN SEGURA)
-// =============================
-const client = mqtt.connect('mqtt://broker.hivemq.com', {
-  reconnectPeriod: 3000, // reconecta cada 3s
-  keepalive: 60
-});
+// 🔥 ID DEL CUADRANTE (CAMBIAR EN CADA SERVER)
+const SURCO_ID = parseInt(process.env.SURCO_ID);
+
+if (!SURCO_ID) {
+  console.error("❌ ERROR: SURCO_ID no definido");
+  process.exit(1);
+}
+
+// 📁 Archivos por cuadrante
+const ARCHIVO = `historial_${SURCO_ID}.json`;
+const ARCHIVO_CONFIG = `config_${SURCO_ID}.json`;
+const ARCHIVO_LIMPIEZA = `ultima_limpieza_${SURCO_ID}.txt`;
+
+// 🔗 MQTT
+const client = mqtt.connect('mqtt://broker.hivemq.com');
 
 client.on('connect', () => {
-  console.log('🟢 MQTT conectado');
-  client.subscribe('riego/surco/+/+', { qos: 0 });
-});
-
-client.on('reconnect', () => {
-  console.log('🟡 Reintentando conexión MQTT...');
-});
-
-client.on('error', (err) => {
-  console.error('🔴 Error MQTT:', err.message);
+  console.log(`🟢 MQTT conectado (Surco ${SURCO_ID})`);
+  client.subscribe('riego/surco/+/+');
 });
 
 // =============================
-// 🔒 VARIABLES
+// 🔒 VARIABLES PERMITIDAS
 // =============================
 const VARIABLES_VALIDAS = [
   "temp_aire",
   "hum_aire",
   "hum_tierra",
-  "valvula",
-  "modo",
-  "umbrales"
+  "valvula"
 ];
 
-const mapaVariables = {
-  temp_aire: "tempAire",
-  hum_aire: "humAire",
-  hum_tierra: "humTierra"
-};
-
+// =============================
+// 🧠 CONTROL INTELIGENTE
+// =============================
 let ultimoRegistro = {};
-let ultimoEnvio = {}; // 🔥 throttle
-let bloqueando = false;
+let ultimoTiempo = {};
+const INTERVALO_MIN = 2000;
 
-let procesandoAuto = false;
+client.on('message', (topic, message) => {
 
-// =============================
-// 📡 MQTT → FIREBASE (OPTIMIZADO)
-// =============================
-client.on('message', async (topic, message) => {
+  const valor = message.toString();
+  const [, , surcoId, variable] = topic.split('/');
+
+  const id = parseInt(surcoId);
+
+  // 🔥 FILTRO CLAVE (SOLO ESTE CUADRANTE)
+  if (id !== SURCO_ID) return;
+
+  if (!VARIABLES_VALIDAS.includes(variable)) return;
+  if (!valor || valor.trim() === "") return;
+
+  const clave = `${id}_${variable}`;
+  const ahora = Date.now();
+
+  if (ultimoRegistro[clave] === valor) return;
+  if (ultimoTiempo[clave] && (ahora - ultimoTiempo[clave] < INTERVALO_MIN)) return;
+
+  ultimoRegistro[clave] = valor;
+  ultimoTiempo[clave] = ahora;
+
+  const registro = {
+    surco: id,
+    variable,
+    valor,
+    tiempo: new Date().toISOString()
+  };
 
   try {
-    // 🔥 SOLO bloquear escritura Firebase, no lógica
-    const bloqueandoLocal = true;
-
-    const valor = message.toString();
-    const [, , surcoId, variable] = topic.split('/');
-    const id = parseInt(surcoId);
-
-    if (!VARIABLES_VALIDAS.includes(variable)) return;
-
-    const variableNormalizada = mapaVariables[variable] || variable;
-
-    // 🔁 evitar duplicados exactos
-    const clave = `${id}_${variableNormalizada}`;
-    // 🔥 permitir humedad aunque sea igual (clave para automático)
-    if (
-      variable !== "hum_tierra" &&
-      ultimoRegistro[clave] === valor
-    ) return;
-    ultimoRegistro[clave] = valor;
-
-    // 🔥 THROTTLE (máx 1 cada 2 segundos)
-    const ahora = Date.now();
-    // 🔥 NO limitar humedad (es crítica para automático)
-    if (
-      variable !== "hum_tierra" &&
-      ultimoEnvio[clave] &&
-      ahora - ultimoEnvio[clave] < 2000
-    ) return;
-    ultimoEnvio[clave] = ahora;
-
-    // =========================
-    // 🌡️ SENSORES
-    // =========================
-    if (["temp_aire", "hum_aire", "hum_tierra"].includes(variable)) {
-      await db.ref(`surcos/${id}/sensores/${variableNormalizada}`)
-        .set(valor);
-
-      // 🔥 AUTOMÁTICO EN TIEMPO REAL
-      if (variable === "hum_tierra") {
-
-        const snapshot = await db.ref(`surcos/${id}`).once('value');
-        const estado = snapshot.val();
-
-        await evaluarAutomaticoBackend(id, estado);
-      }
-    }
-
-    // =========================
-    // 🎮 MODO
-    // =========================
-    if (variable === "modo") {
-      await db.ref(`surcos/${id}/modo`)
-        .set(valor)
-        .catch(err => console.error("🔥 Firebase error:", err));
-    }
-
-    // =========================
-    // 💧 VÁLVULA → RIEGO
-    // =========================
-    if (variable === "valvula") {
-      await db.ref(`surcos/${id}/riego`)
-        .set(valor === "ON")
-        .catch(err => console.error("🔥 Firebase error:", err));
-    }
-
-    // =========================
-    // ⚙️ UMBRALES
-    // =========================
-    if (variable === "umbrales") {
-      try {
-        const data = JSON.parse(valor);
-        await db.ref(`surcos/${id}/umbrales`)
-          .set(data)
-          .catch(err => console.error("🔥 Firebase error:", err));
-      } catch (e) {}
-    }
-
-    // =========================
-    // 📜 HISTORIAL (CONTROLADO)
-    // =========================
-    if (Math.random() < 0.3) { // 🔥 solo 30% de eventos
-      await db.ref(`historial/${id}`).push({
-        tipo: variableNormalizada,
-        valor,
-        tiempo: new Date().toISOString()
-      }).catch(err => console.error("🔥 Firebase error:", err));
-    }
-
-    console.log(`📥 ${variableNormalizada} (${id}) = ${valor}`);
-
-  } catch (err) {
-    console.error("❌ Error general:", err);
-  } finally {
-    setTimeout(() => bloqueando = false, 100);
+    fs.appendFileSync(ARCHIVO, JSON.stringify(registro) + '\n');
+    recortarHistorial();
+    console.log(`📥 [Surco ${SURCO_ID}]`, registro);
+  } catch (error) {
+    console.error('❌ Error guardando:', error);
   }
-
 });
 
 // =============================
-// 🔁 FIREBASE → MQTT (SIN LOOP)
+// 🌐 API HISTORIAL
 // =============================
-let estadoAnterior = {};
+app.get('/historial', (req, res) => {
+  try {
+    if (!fs.existsSync(ARCHIVO)) return res.json([]);
 
-db.ref('surcos').on('value', async snapshot => {
+    const contenido = fs.readFileSync(ARCHIVO, 'utf-8').trim();
+    if (!contenido) return res.json([]);
 
-  const data = snapshot.val();
-  if (!data) return;
+    const data = contenido
+      .split('\n')
+      .filter(line => line.trim() !== "")
+      .map(line => {
+        try { return JSON.parse(line); } catch { return null; }
+      })
+      .filter(Boolean);
 
-  for (let id in data) {
+    res.json(data);
 
-    const actual = data[id];
-    const anterior = estadoAnterior[id] || {};
-
-    if (actual.modo !== anterior.modo) {
-      client.publish(`riego/surco/${id}/modo`, actual.modo);
-    }
-
-    if (actual.riego !== anterior.riego) {
-      client.publish(
-        `riego/surco/${id}/valvula`,
-        actual.riego ? "ON" : "OFF"
-      );
-    }
-
-    const uA = actual.umbrales || {};
-    const uB = anterior.umbrales || {};
-
-    if (
-      uA.humTierraMin !== uB.humTierraMin ||
-      uA.humTierraMax !== uB.humTierraMax
-    ) {
-      client.publish(
-        `riego/surco/${id}/umbrales`,
-        JSON.stringify({
-          humTierraMin: Number(uA.humTierraMin) || 0,
-          humTierraMax: Number(uA.humTierraMax) || 0
-        })
-      );
-    }
-
-    estadoAnterior[id] = JSON.parse(JSON.stringify(actual));
+  } catch (error) {
+    console.error('❌ Error leyendo historial:', error);
+    res.status(500).json([]);
   }
+});
 
+app.delete('/historial', (req, res) => {
+  try {
+    if (fs.existsSync(ARCHIVO)) fs.writeFileSync(ARCHIVO, '');
+    console.log(`🧹 Historial borrado (Surco ${SURCO_ID})`);
+    res.send("OK");
+  } catch (error) {
+    res.status(500).send("Error");
+  }
 });
 
 // =============================
-// 🫀 KEEP ALIVE (ANTI-CRASH)
+// 🌿 API CONFIG
 // =============================
-setInterval(() => {
-  console.log("🫀 Backend vivo:", new Date().toLocaleTimeString());
-}, 10000);
+app.post('/config', (req, res) => {
+  try {
+    const { surco, planta, min, max, modo, plantas } = req.body;
 
-// =============================
-// 🌐 API
-// =============================
-app.get('/', (req, res) => {
-  res.send('🔥 Backend estable PRO funcionando');
+    // 🔥 SEGURIDAD
+    if (surco !== SURCO_ID) {
+      return res.status(403).send("Surco incorrecto");
+    }
+
+    const nuevaConfig = {
+      surco,
+      planta,
+      min,
+      max,
+      modo,
+      plantas: plantas || []
+    };
+
+    fs.writeFileSync(ARCHIVO_CONFIG, JSON.stringify([nuevaConfig], null, 2));
+
+    console.log(`💾 Config guardada (Surco ${SURCO_ID})`, nuevaConfig);
+    res.send("OK");
+
+  } catch (error) {
+    console.error("❌ Error config:", error);
+    res.status(500).send("Error");
+  }
+});
+
+app.get('/config', (req, res) => {
+  try {
+    if (!fs.existsSync(ARCHIVO_CONFIG)) return res.json([]);
+
+    const data = JSON.parse(fs.readFileSync(ARCHIVO_CONFIG));
+
+    res.json(data.map(cfg => ({
+      ...cfg,
+      plantas: cfg.plantas || []
+    })));
+
+  } catch (error) {
+    res.status(500).json([]);
+  }
 });
 
 // =============================
-// 🚀 INICIAR SERVIDOR
+// 🧹 LIMPIEZA AUTOMÁTICA
 // =============================
-app.listen(PORT, () => {
-  console.log(`🌐 Servidor en puerto ${PORT}`);
-});
+function limpiarHistorialSemanal() {
 
-async function evaluarAutomaticoBackend(id, e){
+  let ultima = "";
 
-  if (!e) return;
-  if (e.modo !== "AUTOMATICO") return;
-
-  const humedad = parseFloat(e.sensores?.humTierra);
-  if (isNaN(humedad)) return;
-
-  const u = e.umbrales;
-  if (!u) return;
-
-  const min = Number(u.humTierraMin) || 0;
-  const max = Number(u.humTierraMax) || 0;
-
-  if (min === 0 && max === 0) return;
-  if (min >= max) return;
-
-  const estadoActual = e.riego ? "ON" : "OFF";
-  let nuevoEstado = estadoActual;
-
-  if (estadoActual === "OFF" && humedad < min) {
-    nuevoEstado = "ON";
+  if (fs.existsSync(ARCHIVO_LIMPIEZA)) {
+    ultima = fs.readFileSync(ARCHIVO_LIMPIEZA, 'utf-8');
   }
 
-  if (estadoActual === "ON" && humedad > max) {
-    nuevoEstado = "OFF";
+  if (ultima) {
+    const dias = Math.floor(
+      (new Date() - new Date(ultima)) / (1000 * 60 * 60 * 24)
+    );
+    if (dias < 7) return;
   }
 
-  if (nuevoEstado !== estadoActual) {
+  if (fs.existsSync(ARCHIVO)) {
+    fs.writeFileSync(ARCHIVO, '');
+    console.log(`🧹 Limpieza automática (Surco ${SURCO_ID})`);
+  }
 
-    console.log(`🌱 BACKEND AUTO ${id}: ${estadoActual} → ${nuevoEstado}`);
+  fs.writeFileSync(ARCHIVO_LIMPIEZA, new Date().toISOString());
+}
 
-    client.publish(`riego/surco/${id}/valvula`, nuevoEstado);
+setInterval(limpiarHistorialSemanal, 1000 * 60 * 10);
+limpiarHistorialSemanal();
 
-    await db.ref(`surcos/${id}/riego`)
-      .set(nuevoEstado === "ON");
+// =============================
+// ✂️ RECORTE
+// =============================
+function recortarHistorial() {
+  if (!fs.existsSync(ARCHIVO)) return;
+
+  const lineas = fs.readFileSync(ARCHIVO, 'utf-8')
+    .split('\n')
+    .filter(l => l.trim() !== "");
+
+  const MAX = 1000;
+
+  if (lineas.length > MAX) {
+    const nuevas = lineas.slice(-MAX);
+    fs.writeFileSync(ARCHIVO, nuevas.join('\n') + '\n');
   }
 }
+
+// =============================
+// 🚀 SERVIDOR
+// =============================
+app.listen(PORT, () => {
+  console.log(`🌐 Server Surco ${SURCO_ID} en puerto ${PORT}`);
+});
