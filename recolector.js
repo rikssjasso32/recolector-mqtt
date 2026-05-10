@@ -153,14 +153,21 @@ client.on('message', async (topic, message) => {
     }
 
     // =========================
-    // 📜 HISTORIAL (CONTROLADO)
+    // 📜 HISTORIAL REAL
     // =========================
-    if (Math.random() < 0.3) { // 🔥 solo 30% de eventos
+    if (
+      variable === "modo" ||
+      variable === "valvula"
+    ) {
+
       await db.ref(`historial/${id}`).push({
-        tipo: variableNormalizada,
+        surco: id,
+        variable,
         valor,
         tiempo: new Date().toISOString()
-      }).catch(err => console.error("🔥 Firebase error:", err));
+      })
+      .catch(err => console.error("🔥 Firebase error:", err));
+
     }
 
     console.log(`📥 ${variableNormalizada} (${id}) = ${valor}`);
