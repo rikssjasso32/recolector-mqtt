@@ -74,6 +74,9 @@ let procesandoAuto = false;
 // =============================
 client.on('message', async (topic, message) => {
 
+  console.log("📡 TOPIC:", topic);
+  console.log("📨 MENSAJE:", message.toString());
+
   try {
     // 🔥 SOLO bloquear escritura Firebase, no lógica
     const bloqueandoLocal = true;
