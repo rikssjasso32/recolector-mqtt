@@ -155,15 +155,24 @@ client.on('message', async (topic, message) => {
       } catch (e) {}
     }
 
-    // =========================
-    // 📜 HISTORIAL (CONTROLADO)
-    // =========================
-    await db.ref(`historial/${id}`).push({
-      variable: variable,
-      valor,
-      tiempo: new Date().toISOString(),
-      surco: id
-    });
+const snapshotActual = await db.ref(`surcos/${id}`).once('value');
+const estadoActual = snapshotActual.val() || {};
+
+await db.ref(`historial/${id}`).push({
+
+  tiempo: new Date().toISOString(),
+  surco: id,
+
+  variable,
+  valor,
+
+  tempAire: estadoActual.sensores?.tempAire || "--",
+  humAire: estadoActual.sensores?.humAire || "--",
+  humTierra: estadoActual.sensores?.humTierra || "--",
+
+  riego: estadoActual.riego ? "ON" : "OFF",
+  modo: estadoActual.modo || "MANUAL"
+});
 
     console.log(`📥 ${variableNormalizada} (${id}) = ${valor}`);
 
