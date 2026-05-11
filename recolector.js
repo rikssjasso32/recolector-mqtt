@@ -155,14 +155,12 @@ client.on('message', async (topic, message) => {
     // =========================
     // 📜 HISTORIAL (CONTROLADO)
     // =========================
-    if (Math.random() < 0.3) { // 🔥 solo 30% de eventos
-      await db.ref(`historial/${id}`).push({
-        variable: variable,
-        valor,
-        tiempo: new Date().toISOString(),
-        surco: id
-      })
-    }
+    await db.ref(`historial/${id}`).push({
+      variable: variable,
+      valor,
+      tiempo: new Date().toISOString(),
+      surco: id
+    });
 
     console.log(`📥 ${variableNormalizada} (${id}) = ${valor}`);
 
@@ -233,6 +231,42 @@ setInterval(() => {
 // =============================
 app.get('/', (req, res) => {
   res.send('🔥 Backend estable PRO funcionando');
+});
+
+app.get('/historial', async (req, res) => {
+
+  try {
+
+    const snapshot = await db.ref('historial').once('value');
+
+    const data = snapshot.val() || {};
+
+    let resultado = [];
+
+    Object.keys(data).forEach(surco => {
+
+      Object.keys(data[surco]).forEach(key => {
+
+        resultado.push({
+          ...data[surco][key],
+          surco: Number(surco)
+        });
+
+      });
+
+    });
+
+    res.json(resultado);
+
+  } catch(err){
+
+    console.error(err);
+
+    res.status(500).json({
+      error: "Error obteniendo historial"
+    });
+  }
+
 });
 
 // =============================
