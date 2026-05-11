@@ -21,33 +21,40 @@ const db = admin.database();
 // =============================
 async function limpiarHistorialSemanal(){
 
-  const ahora = new Date();
+  try{
 
-  // 🔥 lunes 00:00
-  const esLunes = ahora.getDay() === 1;
-  const esMedianoche =
-    ahora.getHours() === 0 &&
-    ahora.getMinutes() === 0;
+    const ahora = new Date();
 
-  if(esLunes && esMedianoche){
+    // 🔥 lunes completo
+    const esLunes = ahora.getDay() === 1;
+
+    if(!esLunes) return;
+
+    const hoy = ahora.toDateString();
 
     const refControl = db.ref("config/ultimaLimpieza");
+
     const snap = await refControl.once("value");
 
     const ultima = snap.val();
 
-    const hoy = ahora.toDateString();
-
-    // 🔥 evitar múltiples borrados
+    // 🔥 si ya limpió hoy, salir
     if(ultima === hoy) return;
 
     console.log("🧹 Limpiando historial semanal...");
 
+    // 🔥 borrar historial completo
     await db.ref("historial").remove();
 
+    // 🔥 guardar control
     await refControl.set(hoy);
 
-    console.log("✅ Historial eliminado");
+    console.log("✅ Historial eliminado correctamente");
+
+  }catch(err){
+
+    console.error("🔥 Error limpiando historial:", err);
+
   }
 }
 
