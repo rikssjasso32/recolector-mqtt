@@ -15,6 +15,42 @@ admin.initializeApp({
 
 const db = admin.database();
 
+
+// =============================
+// 🧹 LIMPIEZA SEMANAL HISTORIAL
+// =============================
+async function limpiarHistorialSemanal(){
+
+  const ahora = new Date();
+
+  // 🔥 lunes 00:00
+  const esLunes = ahora.getDay() === 1;
+  const esMedianoche =
+    ahora.getHours() === 0 &&
+    ahora.getMinutes() === 0;
+
+  if(esLunes && esMedianoche){
+
+    const refControl = db.ref("config/ultimaLimpieza");
+    const snap = await refControl.once("value");
+
+    const ultima = snap.val();
+
+    const hoy = ahora.toDateString();
+
+    // 🔥 evitar múltiples borrados
+    if(ultima === hoy) return;
+
+    console.log("🧹 Limpiando historial semanal...");
+
+    await db.ref("historial").remove();
+
+    await refControl.set(hoy);
+
+    console.log("✅ Historial eliminado");
+  }
+}
+
 // =============================
 // 🚀 SERVIDOR
 // =============================
@@ -228,6 +264,11 @@ db.ref('surcos').on('value', async snapshot => {
 setInterval(() => {
   console.log("🫀 Backend vivo:", new Date().toLocaleTimeString());
 }, 10000);
+
+// 🧹 revisar limpieza cada minuto
+setInterval(() => {
+  limpiarHistorialSemanal();
+}, 60000);
 
 // =============================
 // 🌐 API
