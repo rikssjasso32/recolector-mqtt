@@ -157,10 +157,11 @@ client.on('message', async (topic, message) => {
     // =========================
     if (Math.random() < 0.3) { // 🔥 solo 30% de eventos
       await db.ref(`historial/${id}`).push({
-        tipo: variableNormalizada,
+        variable: variable,
         valor,
-        tiempo: new Date().toISOString()
-      }).catch(err => console.error("🔥 Firebase error:", err));
+        tiempo: new Date().toISOString(),
+        surco: id
+      })
     }
 
     console.log(`📥 ${variableNormalizada} (${id}) = ${valor}`);
