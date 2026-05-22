@@ -140,24 +140,36 @@ client.on('message', async (topic, message) => { // Detecta mensajes recibidos d
     const clave = `${id}_${variableNormalizada}`; // Genera clave única para control interno
 
     // permitir humedad aunque sea igual (clave para automático)
-    if (
-      variable !== "hum_tierra" &&
-      ultimoRegistro[clave] === valor
-    ) return; // Evita procesar valores repetidos innecesarios
+    const anterior = parseFloat(ultimoRegistro[clave]);
+    const actual = parseFloat(valor);
 
-    ultimoRegistro[clave] = valor; // Guarda último valor recibido
+    // 🔥 si ambos son números
+    if (!isNaN(anterior) && !isNaN(actual)) {
+
+      // tolerancia mínima
+      if (Math.abs(actual - anterior) < 0.5) {
+        return;
+      }
+
+    } else {
+
+      // texto normal
+      if (ultimoRegistro[clave] === valor) {
+        return;
+      }
+    }
 
     // THROTTLE (máx 1 cada 2 segundos)
     const ahora = Date.now(); // Obtiene tiempo actual
 
     // NO limitar humedad (es crítica para automático)
     if (
-      variable !== "hum_tierra" &&
       ultimoEnvio[clave] &&
       ahora - ultimoEnvio[clave] < 2000
-    ) return; // Limita frecuencia de procesamiento
+    ) return;
 
     ultimoEnvio[clave] = ahora; // Guarda tiempo del último envío
+    ultimoRegistro[clave] = valor;
 
     // =========================
     // SENSORES
