@@ -1,0 +1,19 @@
+{
+  "name": "recolector-mqtt",
+  "version": "1.0.0",
+  "description": "",
+  "main": "recolector.js",
+  "scripts": {
+    "start": "node recolector.js"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "type": "commonjs",
+  "dependencies": {
+    "cors": "^2.8.6",
+    "express": "^5.2.1",
+    "firebase-admin": "^13.8.0",
+    "mqtt": "^5.15.0"
+  }
+}

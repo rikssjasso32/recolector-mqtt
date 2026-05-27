@@ -80,13 +80,7 @@ const client = mqtt.connect('mqtt://broker.hivemq.com', {
 
 client.on('connect', () => { // Detecta conexión MQTT exitosa
   console.log('🟢 MQTT conectado'); // Muestra conexión exitosa en consola
-  client.subscribe('riego/surco/+/+', { qos: 0 });
-
-  client.subscribe('riego/control/+');
-
-  client.subscribe('riego/modo/+');
-
-  client.subscribe('riego/config/+');
+  client.subscribe('riego/surco/+/+', { qos: 0 }); // Se suscribe a todos los tópicos de surcos
 });
 
 client.on('reconnect', () => { // Detecta intento de reconexión MQTT
@@ -106,10 +100,8 @@ const VARIABLES_VALIDAS = [
   "hum_tierra",
   "valvula",
   "modo",
-  "umbrales",
-  "config",
-  "plantas"
-];
+  "umbrales"
+]; // Define variables permitidas para procesamiento MQTT
 
 const mapaVariables = {
   temp_aire: "tempAire",
@@ -119,8 +111,9 @@ const mapaVariables = {
 
 let ultimoRegistro = {}; // Guarda el último registro procesado
 let ultimoEnvio = {}; // Controla frecuencia de envío de datos
+let bloqueando = false; // Controla bloqueos temporales del sistema
 
-
+let procesandoAuto = false; // Indica si existe un proceso automático activo
 
 // =============================
 // MQTT → FIREBASE (OPTIMIZADO)
@@ -132,6 +125,8 @@ client.on('message', async (topic, message) => { // Detecta mensajes recibidos d
 
   try {
 
+    // SOLO bloquear escritura Firebase, no lógica
+    const bloqueandoLocal = true; // Activa bloqueo local temporal
 
     const valor = message.toString(); // Convierte mensaje recibido a texto
     const [, , surcoId, variable] = topic.split('/'); // Extrae datos del tópico MQTT
@@ -182,8 +177,16 @@ client.on('message', async (topic, message) => { // Detecta mensajes recibidos d
     if (["temp_aire", "hum_aire", "hum_tierra"].includes(variable)) {
 
       await db.ref(`surcos/${id}/sensores/${variableNormalizada}`)
-        .set(valor);
+        .set(valor); // Guarda sensor actualizado en Firebase
 
+      // AUTOMÁTICO EN TIEMPO REAL
+      if (variable === "hum_tierra") {
+
+        const snapshot = await db.ref(`surcos/${id}`).once('value'); // Obtiene estado actual del surco
+        const estado = snapshot.val(); // Extrae datos del surco
+
+        await evaluarAutomaticoBackend(id, estado); // Ejecuta lógica automática de riego
+      }
     }
 
     // =========================
@@ -219,67 +222,20 @@ client.on('message', async (topic, message) => { // Detecta mensajes recibidos d
           .set(data) // Guarda umbrales actualizados
           .catch(err => console.error("🔥 Firebase error:", err)); // Muestra errores Firebase
 
-      } catch (e) {
-
-        console.error("🔥 Error parseando umbrales:", e);
-
-      }
+      } catch (e) {} // Ignora errores de conversión JSON
     }
 
     // =========================
-    // CONFIG COMPLETA
+    // HISTORIAL (CONTROLADO)
     // =========================
-    if (variable === "config") {
+    await db.ref(`historial/${id}`).push({
 
-      try {
+      variable: variable, // Guarda nombre de variable recibida
+      valor, // Guarda valor recibido
+      tiempo: new Date().toISOString(), // Guarda fecha y hora del registro
+      surco: id // Guarda identificador del surco
 
-        const data = JSON.parse(valor); // Convierte configuración completa recibida
-
-        await db.ref(`surcos/${id}/planta`)
-          .set(data.planta || "") // Guarda planta seleccionada
-          .catch(err => console.error("🔥 Firebase error:", err));
-
-        await db.ref(`surcos/${id}/plantas`)
-          .set(data.plantas || []) // Guarda lista de plantas
-          .catch(err => console.error("🔥 Firebase error:", err));
-
-        await db.ref(`surcos/${id}/umbrales`)
-          .set(data.umbrales || {}) // Guarda umbrales completos
-          .catch(err => console.error("🔥 Firebase error:", err));
-
-      } catch (e) {
-
-        console.error("🔥 Error parseando config:", e);
-
-      }
-    }
-    
-    // =========================
-    // HISTORIAL (FILTRADO)
-    // =========================
-    if (
-      [
-        "valvula",
-        "modo",
-        "temp_aire",
-        "hum_aire",
-        "hum_tierra"
-      ].includes(variable)
-    ) {
-
-  await db.ref(`historial/${id}`).push({
-
-    variable: variable,
-
-    valor,
-
-    tiempo: new Date().toISOString(),
-
-    surco: id
-
-  });
-
-}
+    });
 
     console.log(`📥 ${variableNormalizada} (${id}) = ${valor}`); // Muestra registro procesado
 
@@ -289,6 +245,59 @@ client.on('message', async (topic, message) => { // Detecta mensajes recibidos d
 
   } finally {
 
+    setTimeout(() => bloqueando = false, 100); // Libera bloqueo después de breve espera
+
+  }
+
+});
+
+// =============================
+// FIREBASE → MQTT (SIN LOOP)
+// =============================
+let estadoAnterior = {}; // Guarda estado anterior de cada surco
+
+db.ref('surcos').on('value', async snapshot => { // Detecta cambios dentro de Firebase
+
+  const data = snapshot.val(); // Obtiene todos los datos de surcos
+
+  if (!data) return; // Verifica existencia de datos
+
+  for (let id in data) { // Recorre todos los surcos
+
+    const actual = data[id]; // Obtiene estado actual
+    const anterior = estadoAnterior[id] || {}; // Obtiene estado anterior almacenado
+
+    if (actual.modo !== anterior.modo) { // Detecta cambios de modo
+
+      client.publish(`riego/surco/${id}/modo`, actual.modo); // Envía nuevo modo por MQTT
+    }
+
+    if (actual.riego !== anterior.riego) { // Detecta cambios de riego
+
+      client.publish(
+        `riego/surco/${id}/valvula`,
+        actual.riego ? "ON" : "OFF" // Convierte booleano a ON/OFF
+      );
+    }
+
+    const uA = actual.umbrales || {}; // Obtiene umbrales actuales
+    const uB = anterior.umbrales || {}; // Obtiene umbrales anteriores
+
+    if (
+      uA.humTierraMin !== uB.humTierraMin ||
+      uA.humTierraMax !== uB.humTierraMax
+    ) { // Detecta cambios en umbrales
+
+      client.publish(
+        `riego/surco/${id}/umbrales`,
+        JSON.stringify({
+          humTierraMin: Number(uA.humTierraMin) || 0, // Convierte humedad mínima a número
+          humTierraMax: Number(uA.humTierraMax) || 0 // Convierte humedad máxima a número
+        })
+      );
+    }
+
+    estadoAnterior[id] = JSON.parse(JSON.stringify(actual)); // Guarda copia del estado actual
   }
 
 });
@@ -366,3 +375,49 @@ app.listen(PORT, () => { // Inicia servidor backend
   console.log(`🌐 Servidor en puerto ${PORT}`); // Muestra puerto activo del servidor
 
 });
+
+async function evaluarAutomaticoBackend(id, e){ // Evalúa lógica automática de riego
+
+  if (!e) return; // Verifica existencia de datos del surco
+
+  if (e.modo !== "AUTOMATICO") return; // Verifica que el modo sea automático
+
+  const humedad = parseFloat(e.sensores?.humTierra); // Obtiene humedad actual de tierra
+
+  if (isNaN(humedad)) return; // Verifica que la humedad sea válida
+
+  const u = e.umbrales; // Obtiene configuración de umbrales
+
+  if (!u) return; // Verifica existencia de umbrales
+
+  const min = Number(u.humTierraMin) || 0; // Obtiene humedad mínima permitida
+  const max = Number(u.humTierraMax) || 0; // Obtiene humedad máxima permitida
+
+  if (min === 0 && max === 0) return; // Verifica configuración válida
+
+  if (min >= max) return; // Verifica coherencia entre valores mínimo y máximo
+
+  const estadoActual = e.riego ? "ON" : "OFF"; // Obtiene estado actual del riego
+
+  let nuevoEstado = estadoActual; // Inicializa nuevo estado del riego
+
+  if (estadoActual === "OFF" && humedad < min) {
+
+    nuevoEstado = "ON"; // Activa riego si humedad es menor al mínimo
+  }
+
+  if (estadoActual === "ON" && humedad > max) {
+
+    nuevoEstado = "OFF"; // Desactiva riego si humedad supera el máximo
+  }
+
+  if (nuevoEstado !== estadoActual) { // Verifica si existe cambio de estado
+
+    console.log(`🌱 BACKEND AUTO ${id}: ${estadoActual} → ${nuevoEstado}`); // Muestra cambio automático en consola
+
+    client.publish(`riego/surco/${id}/valvula`, nuevoEstado); // Envía nuevo estado de válvula por MQTT
+
+    await db.ref(`surcos/${id}/riego`)
+      .set(nuevoEstado === "ON"); // Actualiza estado del riego en Firebase
+  }
+}
