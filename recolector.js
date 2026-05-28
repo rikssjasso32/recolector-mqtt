@@ -143,6 +143,9 @@ client.on('message', (topic, message) => {
     let id = null;
     let variable = null;
 
+    const esEstadoReal =
+    partes[1] === "surco";
+
     // FORMATO:
     // riego/surco/4/umbrales
     if(partes[1] === "surco"){
@@ -242,55 +245,64 @@ client.on('message', (topic, message) => {
 
     }
 
-    // =========================
-    // MODO
-    // =========================
-    if (variable === "modo") {
+// =========================
+// MODO
+// =========================
+if (
+  variable === "modo" &&
+  esEstadoReal
+) {
 
-    db.ref(`surcos/${id}/modo`)
-      .set(
-        valor === "AUTO"
-          ? "AUTOMATICO"
-          : valor
-      )
+  db.ref(`surcos/${id}/modo`)
+    .set(
+      valor === "AUTO"
+        ? "AUTOMATICO"
+        : valor
+    )
+    .catch(err =>
+      console.error("🔥 Firebase error:", err)
+    );
+}
+
+// =========================
+// VÁLVULA → RIEGO
+// =========================
+if (
+  variable === "valvula" &&
+  esEstadoReal
+) {
+
+  db.ref(`surcos/${id}/riego`)
+    .set(valor === "ON")
+    .catch(err =>
+      console.error("🔥 Firebase error:", err)
+    );
+}
+
+// =========================
+// UMBRALES
+// =========================
+if (
+  variable === "umbrales" &&
+  esEstadoReal
+) {
+
+  try {
+
+    const data = JSON.parse(valor); // Convierte datos JSON recibidos
+
+    db.ref(`surcos/${id}/umbrales`)
+      .set(data)
       .catch(err =>
         console.error("🔥 Firebase error:", err)
       );
-    }
 
-    // =========================
-    // VÁLVULA → RIEGO
-    // =========================
-    if (variable === "valvula") {
+  } catch (e) {
 
-    db.ref(`surcos/${id}/riego`)
-      .set(valor === "ON")
-      .catch(err =>
-        console.error("🔥 Firebase error:", err)
-      );
-    }
+    console.error("🔥 Error parseando umbrales:", e);
 
-    // =========================
-    // UMBRALES
-    // =========================
-    if (variable === "umbrales") {
-
-      try {
-
-        const data = JSON.parse(valor); // Convierte datos JSON recibidos
-
-        db.ref(`surcos/${id}/umbrales`)
-          .set(data)
-          .catch(err =>
-            console.error("🔥 Firebase error:", err)
-          );
-
-      } catch (e) {
-
-        console.error("🔥 Error parseando umbrales:", e);
-
-      }
-    }
+  }
+}
 
     // =========================
     // CONFIG COMPLETA
@@ -330,6 +342,12 @@ client.on('message', (topic, message) => {
     // HISTORIAL (FILTRADO)
     // =========================
     if (
+      (
+        ["valvula", "modo"].includes(variable)
+          ? esEstadoReal
+          : true
+      )
+      &&
       [
         "valvula",
         "modo",
@@ -337,7 +355,7 @@ client.on('message', (topic, message) => {
         "hum_aire",
         "hum_tierra"
       ].includes(variable)
-    ) {
+    ){
 
     db.ref(`historial/${id}`).push({
 
