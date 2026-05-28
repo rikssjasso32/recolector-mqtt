@@ -134,10 +134,37 @@ client.on('message', async (topic, message) => { // Detecta mensajes recibidos d
 
 
     const valor = message.toString(); // Convierte mensaje recibido a texto
-    const [, , surcoId, variable] = topic.split('/'); // Extrae datos del tópico MQTT
-    const id = parseInt(surcoId); // Convierte identificador de surco a número
+    const partes = topic.split('/');
 
-    if (!VARIABLES_VALIDAS.includes(variable)) return; // Verifica que la variable sea válida
+    let id = null;
+    let variable = null;
+
+    // FORMATO:
+    // riego/surco/4/umbrales
+    if(partes[1] === "surco"){
+
+      id = parseInt(partes[2]);
+      variable = partes[3];
+
+    }
+
+    // FORMATO:
+    // riego/modo/4
+    // riego/control/4
+    // riego/config/4
+    else{
+
+      variable = partes[1];
+      id = parseInt(partes[2]);
+
+    }
+
+    // NORMALIZAR
+    if(variable === "control"){
+      variable = "valvula";
+    }
+
+    if (!VARIABLES_VALIDAS.includes(variable)) return;
 
     const variableNormalizada = mapaVariables[variable] || variable; // Convierte variable MQTT a nombre interno
 
@@ -208,8 +235,12 @@ client.on('message', async (topic, message) => { // Detecta mensajes recibidos d
     // =========================
     if (variable === "modo") {
 
-      await db.ref(`surcos/${id}/modo`)
-        .set(valor) // Guarda modo actual del sistema
+        await db.ref(`surcos/${id}/modo`)
+          .set(
+            valor === "AUTO"
+              ? "AUTOMATICO"
+              : valor
+          )
         .catch(err => console.error("🔥 Firebase error:", err)); // Muestra errores Firebase
     }
 
