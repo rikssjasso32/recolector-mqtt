@@ -145,11 +145,27 @@ client.on('message', async (topic, message) => { // Detecta mensajes recibidos d
     const clave = `${id}_${variableNormalizada}`; // Genera clave única para control interno
 
     // permitir humedad aunque sea igual (clave para automático)
-    const anterior = parseFloat(ultimoRegistro[clave]);
-    const actual = parseFloat(valor);
+    const esJSON =
+      variable === "umbrales" ||
+      variable === "config" ||
+      variable === "plantas";
+
+    let anterior = null;
+    let actual = null;
+
+    if(!esJSON){
+
+      anterior = parseFloat(ultimoRegistro[clave]);
+      actual = parseFloat(valor);
+
+    }
 
     // 🔥 si ambos son números
-    if (!isNaN(anterior) && !isNaN(actual)) {
+    if (
+      !esJSON &&
+      !isNaN(anterior) &&
+      !isNaN(actual)
+    ) {
 
       // tolerancia mínima
       if (Math.abs(actual - anterior) < 0.5) {
@@ -169,6 +185,7 @@ client.on('message', async (topic, message) => { // Detecta mensajes recibidos d
 
     // NO limitar humedad (es crítica para automático)
     if (
+      !esJSON &&
       ultimoEnvio[clave] &&
       ahora - ultimoEnvio[clave] < 2000
     ) return;
