@@ -125,10 +125,14 @@ let ultimoEnvio = {}; // Controla frecuencia de envío de datos
 // =============================
 // MQTT → FIREBASE (OPTIMIZADO)
 // =============================
-client.on('message', async (topic, message) => { // Detecta mensajes recibidos desde MQTT
+client.on('message', (topic, message) => {
 
-  console.log("📡 TOPIC:", topic); // Muestra tópico recibido
-  console.log("📨 MENSAJE:", message.toString()); // Muestra contenido del mensaje
+  if(process.env.DEBUG === "true"){
+
+    console.log("📡 TOPIC:", topic);
+    console.log("📨 MENSAJE:", message.toString());
+
+  }
 
   try {
 
@@ -170,12 +174,17 @@ client.on('message', async (topic, message) => { // Detecta mensajes recibidos d
 
     // evitar duplicados exactos
     const clave = `${id}_${variableNormalizada}`; // Genera clave única para control interno
+    // CONFIG NUNCA DEBE FILTRARSE
+    if(variable === "config"){
+
+      ultimoRegistro[clave] = null;
+      ultimoEnvio[clave] = null;
+
+    }
 
     // permitir humedad aunque sea igual (clave para automático)
     const esJSON =
-      variable === "umbrales" ||
-      variable === "config" ||
-      variable === "plantas";
+      variable === "umbrales";
 
     let anterior = null;
     let actual = null;
@@ -225,8 +234,11 @@ client.on('message', async (topic, message) => { // Detecta mensajes recibidos d
     // =========================
     if (["temp_aire", "hum_aire", "hum_tierra"].includes(variable)) {
 
-      await db.ref(`surcos/${id}/sensores/${variableNormalizada}`)
-        .set(valor);
+      db.ref(`surcos/${id}/sensores/${variableNormalizada}`)
+        .set(valor)
+        .catch(err =>
+          console.error("🔥 Firebase error:", err)
+        );
 
     }
 
@@ -235,13 +247,15 @@ client.on('message', async (topic, message) => { // Detecta mensajes recibidos d
     // =========================
     if (variable === "modo") {
 
-        await db.ref(`surcos/${id}/modo`)
-          .set(
-            valor === "AUTO"
-              ? "AUTOMATICO"
-              : valor
-          )
-        .catch(err => console.error("🔥 Firebase error:", err)); // Muestra errores Firebase
+    db.ref(`surcos/${id}/modo`)
+      .set(
+        valor === "AUTO"
+          ? "AUTOMATICO"
+          : valor
+      )
+      .catch(err =>
+        console.error("🔥 Firebase error:", err)
+      );
     }
 
     // =========================
@@ -249,9 +263,11 @@ client.on('message', async (topic, message) => { // Detecta mensajes recibidos d
     // =========================
     if (variable === "valvula") {
 
-      await db.ref(`surcos/${id}/riego`)
-        .set(valor === "ON") // Convierte estado ON/OFF a booleano
-        .catch(err => console.error("🔥 Firebase error:", err)); // Muestra errores Firebase
+    db.ref(`surcos/${id}/riego`)
+      .set(valor === "ON")
+      .catch(err =>
+        console.error("🔥 Firebase error:", err)
+      );
     }
 
     // =========================
@@ -263,9 +279,11 @@ client.on('message', async (topic, message) => { // Detecta mensajes recibidos d
 
         const data = JSON.parse(valor); // Convierte datos JSON recibidos
 
-        await db.ref(`surcos/${id}/umbrales`)
-          .set(data) // Guarda umbrales actualizados
-          .catch(err => console.error("🔥 Firebase error:", err)); // Muestra errores Firebase
+        db.ref(`surcos/${id}/umbrales`)
+          .set(data)
+          .catch(err =>
+            console.error("🔥 Firebase error:", err)
+          );
 
       } catch (e) {
 
@@ -283,17 +301,23 @@ client.on('message', async (topic, message) => { // Detecta mensajes recibidos d
 
         const data = JSON.parse(valor); // Convierte configuración completa recibida
 
-        await db.ref(`surcos/${id}/planta`)
-          .set(data.planta || "") // Guarda planta seleccionada
-          .catch(err => console.error("🔥 Firebase error:", err));
+        db.ref(`surcos/${id}/planta`)
+          .set(data.planta || "")
+          .catch(err =>
+            console.error("🔥 Firebase error:", err)
+          );
 
-        await db.ref(`surcos/${id}/plantas`)
-          .set(data.plantas || []) // Guarda lista de plantas
-          .catch(err => console.error("🔥 Firebase error:", err));
+        db.ref(`surcos/${id}/plantas`)
+          .set(data.plantas || [])
+          .catch(err =>
+            console.error("🔥 Firebase error:", err)
+          );
 
-        await db.ref(`surcos/${id}/umbrales`)
-          .set(data.umbrales || {}) // Guarda umbrales completos
-          .catch(err => console.error("🔥 Firebase error:", err));
+        db.ref(`surcos/${id}/umbrales`)
+          .set(data.umbrales || {})
+          .catch(err =>
+            console.error("🔥 Firebase error:", err)
+          );
 
       } catch (e) {
 
@@ -315,21 +339,29 @@ client.on('message', async (topic, message) => { // Detecta mensajes recibidos d
       ].includes(variable)
     ) {
 
-  await db.ref(`historial/${id}`).push({
+    db.ref(`historial/${id}`).push({
 
-    variable: variable,
+      variable: variable,
 
-    valor,
+      valor,
 
-    tiempo: new Date().toISOString(),
+      tiempo: new Date().toISOString(),
 
-    surco: id
+      surco: id
 
-  });
-
+    })
+    .catch(err =>
+      console.error("🔥 Firebase error:", err)
+    );
 }
 
-    console.log(`📥 ${variableNormalizada} (${id}) = ${valor}`); // Muestra registro procesado
+    if(process.env.DEBUG === "true"){
+
+      console.log(
+        `📥 ${variableNormalizada} (${id}) = ${valor}`
+      );
+
+    }
 
   } catch (err) {
 
@@ -344,11 +376,18 @@ client.on('message', async (topic, message) => { // Detecta mensajes recibidos d
 // =============================
 // KEEP ALIVE (ANTI-CRASH)
 // =============================
-setInterval(() => { // Ejecuta función repetitiva cada cierto tiempo
+if(process.env.DEBUG === "true"){
 
-  console.log("🫀 Backend vivo:", new Date().toLocaleTimeString()); // Muestra señal de funcionamiento activo
+  setInterval(() => {
 
-}, 10000);
+    console.log(
+      "🫀 Backend vivo:",
+      new Date().toLocaleTimeString()
+    );
+
+  }, 60000);
+
+}
 
 // revisar limpieza cada minuto
 setInterval(() => { // Ejecuta verificación periódica de limpieza
